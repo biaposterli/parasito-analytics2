@@ -73,6 +73,30 @@ Alterações da v4 -> v5:
      laboratório) passa a ser reconhecida em PARASITE_MAP e classificada em
      COMENSAIS. Antes, "E. coli" (e variantes) não estava no catálogo e
      caía no fallback de capitalização, aparecendo como "Não classificado".
+
+Alterações da v5 -> v6:
+ 11) Nova etiqueta de resultado "Não realizado" (INSUFFICIENT_TOKENS ganha um
+     irmão, NOT_PERFORMED_TOKENS), para o caso em que a amostra (pote/lâmina)
+     foi entregue mas aquele MÉTODO específico não chegou a ser executado
+     nela (ex.: planilha traz a coluna do método, mas o laboratório só rodou
+     esse método em parte das coletas). Diferente de "Amostra insuficiente"
+     (tentou e não deu resultado — conta como INCONCLUSIVO) e diferente de
+     célula vazia (mantido como INCONCLUSIVO, comportamento herdado — célula
+     vazia continua ambígua e não é promovida automaticamente a "não
+     realizado"), uma célula marcada explicitamente como "Não realizado" é
+     EXCLUÍDA por completo do denominador daquele método para aquela
+     coleta: não conta como positivo, negativo, nem inconclusivo. Isso evita
+     que um método nunca executado numa amostra específica infle
+     artificialmente o número de "inconclusivas" daquele método, e evita que
+     ele seja contado como se tivesse sido tentado.
+ 12) Prevalência de lâmina (Graham) no resumo executivo deixa de ser restrita
+     ao subgrupo que SÓ entregou lâmina (nunca entregou pote de fezes) e
+     passa a somar TODOS os pacientes com resultado conclusivo de lâmina —
+     incluindo quem entregou fezes e lâmina. O subgrupo "só lâmina" continua
+     disponível separadamente (lamina_only_conclusivo/lamina_only_inconclusivo)
+     para quem quiser essa quebra específica, mas não é mais a base da
+     métrica principal exibida no resumo executivo. Ver prev_lamina,
+     lamina_conclusivo e lamina_inconclusivo.
 """
 import math
 import re
@@ -114,6 +138,16 @@ PATOGENICOS = {
 COMENSAIS = {"Endolimax nana", "Iodamoeba butschlii", "Entamoeba coli"}
 NEGATIVE_TOKENS = {"-", "negativo", "neg"}
 INSUFFICIENT_TOKENS = {"amostra insuficiente", "insuficiente"}
+# "Não realizado": o método não chegou a ser executado nessa amostra
+# específica (ex.: laboratório só roda esse método em parte das coletas).
+# Diferente de INSUFFICIENT_TOKENS (tentou e não deu resultado — conta como
+# inconclusivo) — ver _classify_instance e build_per_child.
+NOT_PERFORMED_TOKENS = {
+    "não realizado", "nao realizado",
+    "não realizada", "nao realizada",
+    "não feito", "nao feito",
+    "não executado", "nao executado",
+}
 
 # ----------------------------------------------------------------------
 # Catálogo de métodos reconhecidos pelo sistema (coluna, nome de exibição,
@@ -227,6 +261,8 @@ def parse_result_cell(raw):
         return (None, [], False)
     low = t.lower()
     cleaned = low.replace("+++", "").strip()
+    if cleaned in NOT_PERFORMED_TOKENS:
+        return ("Não realizado", [], False)
     if cleaned in NEGATIVE_TOKENS or low == "-":
         return ("Negativo", [], False)
     if cleaned in INSUFFICIENT_TOKENS:
@@ -248,12 +284,19 @@ def parse_result_cell(raw):
 
 def _classify_instance(label, positive):
     """Classifica uma tentativa (uma célula de resultado, já com status 'Entregue') em
-    'positivo' / 'negativo' / 'inconclusivo'. 'Amostra insuficiente' e células vazias
-    (apesar de material entregue) contam como inconclusivo — nunca como negativo."""
+    'positivo' / 'negativo' / 'inconclusivo' / 'nao_realizado'.
+
+    'Amostra insuficiente' e células vazias (apesar de material entregue) contam
+    como inconclusivo — nunca como negativo. 'Não realizado' (etiqueta explícita
+    indicando que o método simplesmente não foi executado nessa amostra) é um
+    status à parte, tratado por quem chama esta função: build_per_child descarta
+    inteiramente instâncias 'nao_realizado' (não entram nem como inconclusivo)."""
     if positive:
         return "positivo"
     if label == "Negativo":
         return "negativo"
+    if label == "Não realizado":
+        return "nao_realizado"
     # "Amostra insuficiente" (label específico) ou célula vazia/sem_resultado (label None)
     return "inconclusivo"
 
@@ -261,7 +304,8 @@ def _classify_instance(label, positive):
 def _reduce_status(instance_list):
     """Reduz uma lista de status de tentativas (de um mesmo domínio/método, para uma
     mesma criança) a um único status: positivo > negativo > inconclusivo.
-    Retorna None se não houve nenhuma tentativa (material não entregue)."""
+    Retorna None se não houve nenhuma tentativa (material não entregue, ou todas as
+    tentativas foram descartadas por serem 'nao_realizado' antes de chegar aqui)."""
     if not instance_list:
         return None
     if "positivo" in instance_list:
@@ -598,6 +642,13 @@ def build_per_child(df: pd.DataFrame, active_methods=None) -> pd.DataFrame:
                     continue  # método não tentado nesta coleta
                 label, species, positive = parse_result_cell(row.get(col))
                 inst = _classify_instance(label, positive)
+                if inst == "nao_realizado":
+                    # Método explicitamente marcado como não executado nesta
+                    # amostra específica: não conta como positivo, negativo
+                    # nem inconclusivo — é como se este método não tivesse
+                    # sido tentado nesta coleta (mas outras coletas/métodos
+                    # continuam valendo normalmente).
+                    continue
                 instances_por_metodo[nome_m].append(inst)
                 if dominio == "fecal":
                     fecal_instances.append(inst)
@@ -783,6 +834,8 @@ def _empty_metrics(por_paciente: pd.DataFrame, active_methods=None) -> dict:
         "apenas_lamina": empty_child,
         "fecal_conclusivo": empty_child,
         "fecal_inconclusivo": empty_child,
+        "lamina_conclusivo": empty_child,
+        "lamina_inconclusivo": empty_child,
         "lamina_only_conclusivo": empty_child,
         "lamina_only_inconclusivo": empty_child,
         "combinada_base": empty_child,
@@ -794,6 +847,9 @@ def _empty_metrics(por_paciente: pd.DataFrame, active_methods=None) -> dict:
         "prev_lamina": 0.0,
         "prev_lamina_ic95_inf": None,
         "prev_lamina_ic95_sup": None,
+        "prev_lamina_only": 0.0,
+        "prev_lamina_only_ic95_inf": None,
+        "prev_lamina_only_ic95_sup": None,
         "prev_combinada": 0.0,
         "prev_combinada_ic95_inf": None,
         "prev_combinada_ic95_sup": None,
@@ -839,6 +895,19 @@ def compute_metrics(df: pd.DataFrame) -> dict:
     fecal_conclusivo = fecal[fecal["fecal_status"].isin(["positivo", "negativo"])]
     fecal_inconclusivo = fecal[fecal["fecal_status"] == "inconclusivo"]
 
+    # ---- lâmina — base PRINCIPAL: TODOS os pacientes analisáveis com resultado
+    # conclusivo de lâmina, tenham eles entregado só lâmina ou fezes+lâmina. Até a
+    # v5, a prevalência de lâmina do resumo executivo usava só o subgrupo que NUNCA
+    # entregou pote de fezes (lamina_only_*, mantido abaixo por compatibilidade e
+    # para quem quiser essa quebra específica) — isso deixava de fora os positivos
+    # de Graham de crianças que entregaram os dois materiais, subestimando a
+    # prevalência real de lâmina no relatório.
+    lamina_conclusivo = analisavel[analisavel["lamina_status"].isin(["positivo", "negativo"])]
+    lamina_inconclusivo = analisavel[analisavel["lamina_status"] == "inconclusivo"]
+
+    # ---- subgrupo "só lâmina" (nunca entregou pote de fezes) — mantido à parte
+    # para a nota específica desse subgrupo (ver app.py/report_pdf.py), mas não é
+    # mais a base da prevalência principal de lâmina.
     lamina_only_conclusivo = apenas_lamina[apenas_lamina["lamina_status"].isin(["positivo", "negativo"])]
     lamina_only_inconclusivo = apenas_lamina[apenas_lamina["lamina_status"] == "inconclusivo"]
 
@@ -848,14 +917,18 @@ def compute_metrics(df: pd.DataFrame) -> dict:
     combinada_inconclusiva = analisavel[~tem_dominio_conclusivo]
 
     prev_fecal = pct(fecal_conclusivo["positivo_fecal"].sum(), len(fecal_conclusivo))
-    prev_lamina = pct(lamina_only_conclusivo["positivo_lamina"].sum(), len(lamina_only_conclusivo))
+    prev_lamina = pct(lamina_conclusivo["positivo_lamina"].sum(), len(lamina_conclusivo))
+    prev_lamina_only = pct(lamina_only_conclusivo["positivo_lamina"].sum(), len(lamina_only_conclusivo))
     prev_combinada = pct(combinada_base["positivo_algum_metodo"].sum(), len(combinada_base))
 
-    # ---- IC95% (Wilson) das três prevalências principais ----
+    # ---- IC95% (Wilson) das prevalências principais ----
     prev_fecal_ic95_inf, prev_fecal_ic95_sup = wilson_ci(
         fecal_conclusivo["positivo_fecal"].sum(), len(fecal_conclusivo)
     )
     prev_lamina_ic95_inf, prev_lamina_ic95_sup = wilson_ci(
+        lamina_conclusivo["positivo_lamina"].sum(), len(lamina_conclusivo)
+    )
+    prev_lamina_only_ic95_inf, prev_lamina_only_ic95_sup = wilson_ci(
         lamina_only_conclusivo["positivo_lamina"].sum(), len(lamina_only_conclusivo)
     )
     prev_combinada_ic95_inf, prev_combinada_ic95_sup = wilson_ci(
@@ -900,9 +973,9 @@ def compute_metrics(df: pd.DataFrame) -> dict:
     # relevante. Mantido como contagem bruta descritiva.
 
     # ---- comparação de métodos — denominador = pacientes com status CONCLUSIVO
-    # naquele método específico (exclui quem só teve "amostra insuficiente" nesse
-    # método, mesmo que tenha entregue material). Itera só sobre os métodos
-    # ATIVOS nesta planilha.
+    # naquele método específico (exclui quem só teve "amostra insuficiente" ou
+    # "não realizado" nesse método, mesmo que tenha entregue material). Itera só
+    # sobre os métodos ATIVOS nesta planilha.
     metodos_rows = []
     for col, nome_m, status_key, dominio in active_methods:
         status_col = f"status_{nome_m}"
@@ -1105,6 +1178,8 @@ def compute_metrics(df: pd.DataFrame) -> dict:
         "apenas_lamina": apenas_lamina,
         "fecal_conclusivo": fecal_conclusivo,
         "fecal_inconclusivo": fecal_inconclusivo,
+        "lamina_conclusivo": lamina_conclusivo,
+        "lamina_inconclusivo": lamina_inconclusivo,
         "lamina_only_conclusivo": lamina_only_conclusivo,
         "lamina_only_inconclusivo": lamina_only_inconclusivo,
         "combinada_base": combinada_base,
@@ -1116,6 +1191,9 @@ def compute_metrics(df: pd.DataFrame) -> dict:
         "prev_lamina": prev_lamina,
         "prev_lamina_ic95_inf": prev_lamina_ic95_inf,
         "prev_lamina_ic95_sup": prev_lamina_ic95_sup,
+        "prev_lamina_only": prev_lamina_only,
+        "prev_lamina_only_ic95_inf": prev_lamina_only_ic95_inf,
+        "prev_lamina_only_ic95_sup": prev_lamina_only_ic95_sup,
         "prev_combinada": prev_combinada,
         "prev_combinada_ic95_inf": prev_combinada_ic95_inf,
         "prev_combinada_ic95_sup": prev_combinada_ic95_sup,
