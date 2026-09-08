@@ -16,6 +16,7 @@ import streamlit as st
 
 from analysis_engine import (
     METHOD_CATALOG,
+    PARASITE_MAP,
     PATOGENICOS,
     COMENSAIS,
     build_per_child,
@@ -418,8 +419,12 @@ def generate_template_bytes() -> bytes:
                      {col: "Enterobius vermicularis" for col in metodo_cols_lamina}, "")
     linha3 = _linha("F-001", "P3", "Não entregue", "Entregue",
                      {col: "" for col in metodo_cols_fecal}, "amostra fecal não coletada")
+    linha4 = _linha("F-002", "P1", "Entregue", "Entregue",
+                     {"metodo_hpj": "E. nana + G. lamblia",
+                      **{col: "Não realizado" for col in metodo_cols_lamina if col != "metodo_graham"}},
+                     "poliparasitismo (2 espécies na mesma célula, separadas por '+')")
 
-    example = pd.DataFrame([linha1, linha2, linha3], columns=headers)
+    example = pd.DataFrame([linha1, linha2, linha3, linha4], columns=headers)
 
     metodo_legenda = {
         "metodo_graham": "Resultado do Graham — Enterobius vermicularis, Taenia sp.",
@@ -431,6 +436,12 @@ def generate_template_bytes() -> bytes:
         "metodo_mifc": "Resultado do MIFC (Blagg) — sedimentação por centrifugação.",
         "metodo_ritchie": "Resultado do Ritchie (formol-éter) — sedimentação por centrifugação.",
     }
+    valores_aceitos_metodo = (
+        "'-' (negativo) · 'Amostra insuficiente' (tentou, mas não deu resultado) · "
+        "'Não realizado' (esse método não foi feito nessa amostra — não entra em nenhuma conta) · "
+        "ou espécie(s) reconhecida(s) (veja a aba 'Espécies reconhecidas'). Para poliparasitismo, "
+        "escreva mais de uma espécie na MESMA célula separadas por ' + ' (ex.: 'E. nana + G. lamblia')."
+    )
     legenda_rows = [
         ["id_paciente", "Código único do paciente (repete nas linhas de P1/P2/P3)", "texto livre, ex.: F-001"],
         ["coleta", "Qual das até 3 coletas essa linha representa", "P1, P2 ou P3"],
@@ -441,11 +452,50 @@ def generate_template_bytes() -> bytes:
     ]
     for col, nome, _, dominio in METHOD_CATALOG:
         legenda_rows.append([
-            col, metodo_legenda.get(col, f"Resultado do {nome}."),
-            "'-' (negativo), 'Amostra insuficiente', ou espécie(s) separadas por ' + '",
+            col, metodo_legenda.get(col, f"Resultado do {nome}."), valores_aceitos_metodo,
         ])
     legenda_rows.append(["observacoes", "Observações livres (opcional)", "texto livre ou vazio"])
     legenda = pd.DataFrame(legenda_rows, columns=["Coluna", "O que é", "Valores aceitos"])
+
+    # ----------------------------------------------------------------
+    # Aba "Espécies reconhecidas" — lista, a partir do próprio PARASITE_MAP do
+    # sistema (fonte única de verdade, sem duplicar a lista manualmente), o
+    # nome padronizado de cada espécie, sua categoria clínica e todas as
+    # grafias abreviadas aceitas. Uma espécie digitada fora dessas grafias
+    # (e fora do nome completo) não é reconhecida como erro — ela ainda é
+    # registrada no relatório, mas cai em "Não classificado" em vez de entrar
+    # como Patogênico/Comensal, e pode aparecer como uma linha própria em vez
+    # de ser agrupada com a grafia já cadastrada da mesma espécie.
+    # ----------------------------------------------------------------
+    variantes_por_especie = {}
+    for chave, canonical in PARASITE_MAP.items():
+        variantes_por_especie.setdefault(canonical, []).append(chave)
+
+    especies_rows = []
+    for especie in sorted(variantes_por_especie):
+        variantes = sorted(set(variantes_por_especie[especie]), key=len)
+        categoria = "Patogênico" if especie in PATOGENICOS else ("Comensal" if especie in COMENSAIS else "Não classificado")
+        especies_rows.append([especie, categoria, ", ".join(variantes)])
+    especies_reconhecidas = pd.DataFrame(
+        especies_rows,
+        columns=["Espécie (nome padronizado no relatório)", "Categoria clínica", "Grafias aceitas na célula (maiúsc./minúsc. tanto faz)"],
+    )
+    especies_nota = pd.DataFrame(
+        [[
+            "Maiúsculas/minúsculas não importam, e 'e.coli', 'e. coli' e 'e .coli' são todos "
+            "reconhecidos como a mesma grafia. Uma espécie escrita de um jeito que NÃO está nesta "
+            "lista (nem por extenso, nem abreviada como aqui) ainda é aceita e aparece no relatório, "
+            "mas como 'Não classificado' — sem entrar automaticamente em Patogênico ou Comensal — e "
+            "pode virar uma linha separada da mesma espécie já cadastrada com outra grafia. Prefira "
+            "sempre uma das grafias desta lista, ou o nome científico completo (ex.: 'Giardia "
+            "lamblia').\n\n"
+            "Poliparasitismo: para registrar mais de uma espécie na MESMA amostra/método, escreva "
+            "todas na mesma célula separadas por ' + ' (ex.: 'E. nana + G. lamblia + Enterobius "
+            "vermicularis'). Vírgula também é aceita como separador. Não crie uma linha extra nem "
+            "repita a coleta — é uma célula só, com todas as espécies encontradas."
+        ]],
+        columns=["Como preencher espécies e poliparasitismo"],
+    )
 
     aviso = pd.DataFrame(
         [[
@@ -453,7 +503,14 @@ def generate_template_bytes() -> bytes:
             "laboratório não usa algum deles, pode simplesmente APAGAR a coluna inteira antes de "
             "enviar — o sistema detecta sozinho quais métodos estão presentes na planilha e ajusta "
             "as análises (denominadores, gráficos e tabelas) de acordo. Não é preciso preencher "
-            "nem manter colunas de métodos não utilizados."
+            "nem manter colunas de métodos não utilizados.\n\n"
+            "Veja a aba 'Espécies reconhecidas' para a lista de parasitos que o sistema já sabe "
+            "identificar e a grafia aceita para cada um, e como anotar poliparasitismo (mais de uma "
+            "espécie na mesma célula).\n\n"
+            "Use 'Não realizado' numa célula de método quando aquele método específico não chegou a "
+            "ser executado NESSA amostra (mesmo com o pote/lâmina entregue) — diferente de 'Amostra "
+            "insuficiente', que é quando o método foi tentado mas não deu resultado. Uma célula "
+            "'Não realizado' não entra em nenhum denominador do relatório para aquele método."
         ]],
         columns=["Leia antes de preencher"],
     )
@@ -463,6 +520,8 @@ def generate_template_bytes() -> bytes:
         aviso.to_excel(writer, sheet_name="Leia-me", index=False)
         example.to_excel(writer, sheet_name="Dados", index=False)
         legenda.to_excel(writer, sheet_name="Legenda", index=False)
+        especies_nota.to_excel(writer, sheet_name="Especies_Reconhecidas", index=False, startrow=0)
+        especies_reconhecidas.to_excel(writer, sheet_name="Especies_Reconhecidas", index=False, startrow=3)
     return buf.getvalue()
 
 
@@ -585,9 +644,10 @@ with st.container():
     st.markdown('<div class="lapahv-step-wrap">', unsafe_allow_html=True)
     step_header(1, "Baixe o modelo de planilha")
     st.write(
-        "Um arquivo .xlsx com as colunas certas, os valores aceitos em cada uma e uma linha de "
-        "exemplo — para preencher com os dados da sua coleta. Traz uma coluna para cada método "
-        "que o sistema reconhece; apague as que o seu laboratório não usa antes de enviar."
+        "Um arquivo .xlsx com as colunas certas, os valores aceitos em cada uma, a lista de "
+        "espécies reconhecidas e uma linha de exemplo — para preencher com os dados da sua coleta. "
+        "Traz uma coluna para cada método que o sistema reconhece; apague as que o seu laboratório "
+        "não usa antes de enviar."
     )
     st.download_button(
         "⬇ Baixar modelo (.xlsx)",
@@ -657,7 +717,7 @@ if uploaded_file is not None:
 
                 n_inconclusivas = (
                     len(metrics["fecal_inconclusivo"])
-                    + len(metrics["lamina_only_inconclusivo"])
+                    + len(metrics["lamina_inconclusivo"])
                 )
 
                 tab_geral, tab_especies, tab_metodos, tab_base, tab_export = st.tabs(
@@ -681,13 +741,14 @@ if uploaded_file is not None:
                                         "método de Wilson.")
                         st.caption(format_ic(metrics["prev_fecal_ic95_inf"], metrics["prev_fecal_ic95_sup"]))
                     with c2:
-                        st.metric("Prevalência — só lâmina", f"{metrics['prev_lamina']:.1f}%",
-                                   help="Base: pacientes que só entregaram lâmina (nunca o pote de fezes) e "
-                                        "tiveram resultado conclusivo no(s) método(s) de lâmina desta "
-                                        "planilha. Reflete tipicamente Enterobius vermicularis — o único "
-                                        "parasita pesquisável só com a lâmina. IC95% calculado pelo "
-                                        "método de Wilson (preferível ao normal para n pequeno, como "
-                                        "costuma ser o caso deste subgrupo).")
+                        st.metric("Prevalência — lâmina (todos os pacientes)", f"{metrics['prev_lamina']:.1f}%",
+                                   help="Base: TODOS os pacientes com resultado conclusivo do(s) método(s) "
+                                        "de lâmina desta planilha (Graham) — tenham eles entregado só a "
+                                        "lâmina ou fezes e lâmina. Reflete tipicamente Enterobius "
+                                        "vermicularis — o único parasita pesquisável só com a lâmina. O "
+                                        "subgrupo que entregou exclusivamente lâmina é reportado à parte "
+                                        "logo abaixo, mas seus resultados já estão somados aqui. IC95% "
+                                        "calculado pelo método de Wilson.")
                         st.caption(format_ic(metrics["prev_lamina_ic95_inf"], metrics["prev_lamina_ic95_sup"]))
                     with c3:
                         st.metric("Prevalência combinada", f"{metrics['prev_combinada']:.1f}%",
@@ -702,9 +763,11 @@ if uploaded_file is not None:
                             f"""<div class="lapahv-note"><strong>Amostras inconclusivas:</strong>
                             {len(metrics['fecal_inconclusivo'])} paciente(s) entregaram pote de fezes mas
                             tiveram <em>todos</em> os métodos fecais marcados como "Amostra insuficiente"
-                            (ou sem resultado registrado){', ' + str(len(metrics['lamina_only_inconclusivo'])) + ' paciente(s) na mesma situação só com lâmina' if len(metrics['lamina_only_inconclusivo']) else ''}.
+                            (ou sem resultado registrado){', ' + str(len(metrics['lamina_inconclusivo'])) + ' paciente(s) com lâmina entregue na mesma situação' if len(metrics['lamina_inconclusivo']) else ''}.
                             Esses pacientes foram excluídos dos denominadores de prevalência acima — eles
-                            <u>não</u> contam como negativos, pois não houve diagnóstico conclusivo.</div>""",
+                            <u>não</u> contam como negativos, pois não houve diagnóstico conclusivo.
+                            Células marcadas como "Não realizado" não entram nesta contagem — elas são
+                            excluídas do denominador do método sem contar como inconclusivas.</div>""",
                             unsafe_allow_html=True,
                         )
 
@@ -712,9 +775,12 @@ if uploaded_file is not None:
                         st.markdown(
                             f"""<div class="lapahv-note" style="margin-top:8px;"><strong>Atenção:</strong> {len(metrics['apenas_lamina'])}
                             paciente(s) só entregaram a lâmina, nunca o pote de fezes — para eles, apenas
-                            o(s) método(s) de lâmina desta planilha pôde(puderam) ser pesquisado(s). Por
-                            isso a prevalência principal do estudo considera só quem teve amostra fecal
-                            analisada; o subgrupo de só-lâmina é reportado à parte.</div>""",
+                            o(s) método(s) de lâmina desta planilha pôde(puderam) ser pesquisado(s). Esses
+                            resultados já estão somados na "Prevalência — lâmina (todos os pacientes)"
+                            acima; isoladamente, a prevalência só neste subgrupo é de
+                            {metrics['prev_lamina_only']:.1f}%
+                            ({int(metrics['lamina_only_conclusivo']['positivo_lamina'].sum())} de
+                            {len(metrics['lamina_only_conclusivo'])} pacientes conclusivos).</div>""",
                             unsafe_allow_html=True,
                         )
 
@@ -846,8 +912,8 @@ if uploaded_file is not None:
                     section_title(
                         "Comparação entre métodos diagnósticos",
                         "Denominador = pacientes com resultado conclusivo naquele método específico "
-                        "(exclui quem teve só 'Amostra insuficiente' nesse método). Lista só os "
-                        "métodos presentes nesta planilha.",
+                        "(exclui quem teve só 'Amostra insuficiente' ou 'Não realizado' nesse método). "
+                        "Lista só os métodos presentes nesta planilha.",
                     )
                     colE, colF = st.columns([3, 2])
                     with colE:
@@ -993,15 +1059,20 @@ if uploaded_file is not None:
                             {"metrica": "Prevalência — amostra fecal (conclusiva)", "valor_pct": m["prev_fecal"],
                              "ic95_inf": m["prev_fecal_ic95_inf"], "ic95_sup": m["prev_fecal_ic95_sup"],
                              "n_pacientes": len(m["fecal_conclusivo"])},
-                            {"metrica": "Prevalência — só lâmina (conclusiva)", "valor_pct": m["prev_lamina"],
+                            {"metrica": "Prevalência — lâmina, todos os pacientes (conclusiva)", "valor_pct": m["prev_lamina"],
                              "ic95_inf": m["prev_lamina_ic95_inf"], "ic95_sup": m["prev_lamina_ic95_sup"],
+                             "n_pacientes": len(m["lamina_conclusivo"])},
+                            {"metrica": "Prevalência — subgrupo só-lâmina (conclusiva)", "valor_pct": m["prev_lamina_only"],
+                             "ic95_inf": m["prev_lamina_only_ic95_inf"], "ic95_sup": m["prev_lamina_only_ic95_sup"],
                              "n_pacientes": len(m["lamina_only_conclusivo"])},
                             {"metrica": "Prevalência combinada (conclusiva)", "valor_pct": m["prev_combinada"],
                              "ic95_inf": m["prev_combinada_ic95_inf"], "ic95_sup": m["prev_combinada_ic95_sup"],
                              "n_pacientes": len(m["combinada_base"])},
                             {"metrica": "Inconclusivas — fezes (amostra insuficiente em tudo)", "valor_pct": None,
                              "ic95_inf": None, "ic95_sup": None, "n_pacientes": len(m["fecal_inconclusivo"])},
-                            {"metrica": "Inconclusivas — só lâmina", "valor_pct": None,
+                            {"metrica": "Inconclusivas — lâmina, todos os pacientes", "valor_pct": None,
+                             "ic95_inf": None, "ic95_sup": None, "n_pacientes": len(m["lamina_inconclusivo"])},
+                            {"metrica": "Inconclusivas — subgrupo só-lâmina", "valor_pct": None,
                              "ic95_inf": None, "ic95_sup": None, "n_pacientes": len(m["lamina_only_inconclusivo"])},
                             {"metrica": "Métodos detectados nesta planilha", "valor_pct": None,
                              "ic95_inf": None, "ic95_sup": None, "n_pacientes": None,
@@ -1077,6 +1148,8 @@ st.caption(
     "como positiva se qualquer uma de suas coletas (P1/P2/P3) revelou o parasita. O pote de fezes "
     "alimenta os métodos de domínio fecal; a lâmina alimenta exclusivamente os métodos de domínio "
     "lâmina/swab. Crianças cujos únicos resultados foram 'Amostra insuficiente' são reportadas à "
-    "parte como inconclusivas, e não entram nos denominadores de prevalência. A planilha enviada "
-    "não precisa trazer todos os métodos do modelo — o sistema detecta e analisa só os presentes."
+    "parte como inconclusivas, e não entram nos denominadores de prevalência. Uma célula marcada "
+    "'Não realizado' é excluída por completo do denominador daquele método para aquela coleta. A "
+    "planilha enviada não precisa trazer todos os métodos do modelo — o sistema detecta e analisa "
+    "só os presentes."
 )
