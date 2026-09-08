@@ -201,8 +201,14 @@ def _styles():
 
 
 def _stat_table(metrics):
+    # Coluna do meio: prevalência de lâmina calculada sobre TODOS os pacientes com
+    # resultado conclusivo de lâmina (lamina_conclusivo) — não mais restrita ao
+    # subgrupo que só entregou lâmina (ver analysis_engine.py, alteração v5 -> v6,
+    # item 12). O subgrupo "só lâmina" continua disponível em
+    # metrics['lamina_only_conclusivo'] / ['lamina_only_inconclusivo'] e é citado
+    # à parte, na nota de atenção logo abaixo desta tabela.
     data = [
-        ["PREVALÊNCIA — AMOSTRA FECAL", "PREVALÊNCIA — SÓ LÂMINA", "PREVALÊNCIA COMBINADA"],
+        ["PREVALÊNCIA — AMOSTRA FECAL", "PREVALÊNCIA — LÂMINA (TODOS)", "PREVALÊNCIA COMBINADA"],
         [f"{metrics['prev_fecal']:.1f}%", f"{metrics['prev_lamina']:.1f}%", f"{metrics['prev_combinada']:.1f}%"],
         [
             f"IC95% {_ic_texto(metrics['prev_fecal_ic95_inf'], metrics['prev_fecal_ic95_sup'])}",
@@ -211,7 +217,7 @@ def _stat_table(metrics):
         ],
         [
             f"{int(metrics['fecal_conclusivo']['positivo_fecal'].sum())} de {len(metrics['fecal_conclusivo'])} pacientes (conclusivas)",
-            f"{int(metrics['lamina_only_conclusivo']['positivo_lamina'].sum())} de {len(metrics['lamina_only_conclusivo'])} pacientes (conclusivas)",
+            f"{int(metrics['lamina_conclusivo']['positivo_lamina'].sum())} de {len(metrics['lamina_conclusivo'])} pacientes (conclusivas)",
             f"{int(metrics['combinada_base']['positivo_algum_metodo'].sum())} de {len(metrics['combinada_base'])} pacientes (conclusivas)",
         ],
     ]
@@ -336,14 +342,18 @@ def build_pdf_report(metrics: dict, logo_path: str | None = None) -> bytes:
     story.append(_stat_table(metrics))
     story.append(Spacer(1, 3 * mm))
 
-    n_inconclusivas = len(metrics["fecal_inconclusivo"]) + len(metrics["lamina_only_inconclusivo"])
+    # "Amostras inconclusivas": agora soma TODOS os pacientes com lâmina
+    # inconclusiva (lamina_inconclusivo, base completa), não mais só o subgrupo
+    # que entregou exclusivamente lâmina — consistente com prev_lamina acima,
+    # que também passou a usar a base completa.
+    n_inconclusivas = len(metrics["fecal_inconclusivo"]) + len(metrics["lamina_inconclusivo"])
     if n_inconclusivas > 0:
         note_inc = (
             f"<b>Amostras inconclusivas:</b> {len(metrics['fecal_inconclusivo'])} criança(s) com "
             "pote de fezes entregue tiveram todos os métodos fecais marcados como \"Amostra "
             "insuficiente\" (ou sem resultado registrado)"
-            + (f"; {len(metrics['lamina_only_inconclusivo'])} paciente(s) na mesma situação só com "
-               "lâmina" if len(metrics['lamina_only_inconclusivo']) else "")
+            + (f"; {len(metrics['lamina_inconclusivo'])} paciente(s) com lâmina entregue na mesma "
+               "situação" if len(metrics['lamina_inconclusivo']) else "")
             + ". Esses pacientes foram excluídoss dos denominadores de prevalência — não contam "
               "como negativas."
         )
@@ -354,8 +364,11 @@ def build_pdf_report(metrics: dict, logo_path: str | None = None) -> bytes:
         note = (
             f"<b>Atenção:</b> {len(metrics['apenas_lamina'])} paciente(s) só entregaram a lâmina, nunca "
             "o pote de fezes — para eles, apenas o(s) método(s) de lâmina pôde(puderam) ser "
-            "pesquisado(s). A prevalência principal do estudo considera só quem teve amostra fecal "
-            "analisada; o subgrupo de só-lâmina é reportado à parte."
+            "pesquisado(s). Os resultados desse subgrupo já estão incluídos na prevalência de lâmina "
+            "do resumo acima (que soma todos os pacientes com resultado conclusivo de lâmina, tenham "
+            f"entregado só lâmina ou fezes e lâmina); isoladamente, a prevalência só neste subgrupo é "
+            f"de {metrics['prev_lamina_only']:.1f}% ({int(metrics['lamina_only_conclusivo']['positivo_lamina'].sum())} "
+            f"de {len(metrics['lamina_only_conclusivo'])} pacientes conclusivos)."
         )
         story.append(Paragraph(note, styles["note"]))
 
@@ -457,7 +470,8 @@ def build_pdf_report(metrics: dict, logo_path: str | None = None) -> bytes:
     story.append(Paragraph("Comparação entre métodos diagnósticos", styles["h2"]))
     story.append(Paragraph(
         "Denominador = pacientes com resultado conclusivo naquele método específico (exclui "
-        "\"Amostra insuficiente\"). Lista os métodos efetivamente presentes nesta planilha.",
+        "\"Amostra insuficiente\" e \"Não realizado\"). Lista os métodos efetivamente presentes "
+        "nesta planilha.",
         styles["small"],
     ))
     story.append(Spacer(1, 1.5 * mm))
@@ -574,8 +588,11 @@ def build_pdf_report(metrics: dict, logo_path: str | None = None) -> bytes:
         "como positiva se qualquer uma de suas coletas (P1/P2/P3) revelou o parasita. O pote de "
         "fezes alimenta os métodos de domínio fecal; a lâmina alimenta exclusivamente os métodos de "
         "domínio lâmina/swab. Pacientes cujos únicos resultados foram \"Amostra insuficiente\" são "
-        "reportadas à parte como inconclusivas e não entram nos denominadores de prevalência. Esta "
-        f"planilha trouxe os seguintes métodos: {', '.join(metodos_ativos_nomes) if metodos_ativos_nomes else '—'}.",
+        "reportadas à parte como inconclusivas e não entram nos denominadores de prevalência. Uma "
+        "coluna de método marcada como \"Não realizado\" numa coleta específica é excluída inteiramente "
+        "do denominador daquele método nessa coleta — não conta como positiva, negativa nem "
+        "inconclusiva. Esta planilha trouxe os seguintes métodos: "
+        f"{', '.join(metodos_ativos_nomes) if metodos_ativos_nomes else '—'}.",
         styles["small"],
     ))
 
