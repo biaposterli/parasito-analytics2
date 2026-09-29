@@ -120,10 +120,32 @@ Alterações da v6 -> v7:
  16) Marcação de intensidade entre parênteses — "(+)", "(++)", "(+++)" — e
      sequências "++"/"+++" coladas ao nome são removidas antes de separar as
      espécies. Antes, "E. nana (+)" virava duas "espécies" ("E. nana (" e ")").
+
+Alterações da v7 -> v8 (análise configurável):
+ 17) Nova AnalysisConfig: quem usa o sistema define (no site ou nas abas
+     Config_* da planilha — ver analysis_config.py):
+       - quais parasitos entram na análise (os excluídos são ignorados; uma
+         célula que só tinha parasitos excluídos passa a contar como negativa);
+       - a classificação de cada parasito (Patogênico / Comensal), que
+         substitui PATOGENICOS/COMENSAIS fixos;
+       - "Agrupar como": junta grafias/nomes diferentes numa só espécie;
+       - quais métodos entram, inclusive métodos fora do catálogo (qualquer
+         coluna da planilha), e se cada um é de FEZES ou de LÂMINA (Graham);
+       - a quantidade de amostras (coletas) por paciente considerada: coletas
+         P(k) com k maior que esse número são descartadas.
+     Sem config, o comportamento é idêntico ao da v7.
+ 18) Coletas generalizadas para P1..Pn (antes só P1/P2/P3).
+ 19) Prevalências "somente patogênicos", separadas por domínio (fezes x lâmina),
+     e prevalência por espécie da lâmina (especies_lamina_resumo), para os
+     gráficos "todos os parasitos" x "somente patogênicos" de cada domínio.
+ 20) McNemar HPJ x Willis localiza os métodos pela COLUNA (metodo_hpj /
+     metodo_willis), não pelo nome de exibição.
 """
 import math
 import re
 import unicodedata
+from dataclasses import dataclass, field
+
 import pandas as pd
 import numpy as np
 
@@ -151,14 +173,55 @@ PARASITE_MAP = {
     # classificado") em vez de ser reconhecida como espécie comensal.
     "e. coli": "Entamoeba coli",
     "entamoeba coli": "Entamoeba coli",
+    # v8 — espécies frequentes em coproparasitológico, para que já venham com
+    # nome padronizado. A classificação padrão abaixo é só um ponto de partida:
+    # quem usa o sistema pode mudar qualquer uma na configuração da análise.
+    "a. lumbricoides": "Ascaris lumbricoides",
+    "ascaris lumbricoides": "Ascaris lumbricoides",
+    "t. trichiura": "Trichuris trichiura",
+    "trichuris trichiura": "Trichuris trichiura",
+    "ancilostomídeo": "Ancilostomídeos",
+    "ancilostomideo": "Ancilostomídeos",
+    "ancilostomídeos": "Ancilostomídeos",
+    "ancilostomideos": "Ancilostomídeos",
+    "s. stercoralis": "Strongyloides stercoralis",
+    "strongyloides stercoralis": "Strongyloides stercoralis",
+    "h. nana": "Hymenolepis nana",
+    "hymenolepis nana": "Hymenolepis nana",
+    "taenia sp.": "Taenia sp.",
+    "taenia sp": "Taenia sp.",
+    "s. mansoni": "Schistosoma mansoni",
+    "schistosoma mansoni": "Schistosoma mansoni",
+    "b. hominis": "Blastocystis sp.",
+    "blastocystis hominis": "Blastocystis sp.",
+    "blastocystis sp.": "Blastocystis sp.",
+    "blastocystis sp": "Blastocystis sp.",
+    "blastocystis": "Blastocystis sp.",
+    "c. mesnili": "Chilomastix mesnili",
+    "chilomastix mesnili": "Chilomastix mesnili",
+    "e. hartmanni": "Entamoeba hartmanni",
+    "entamoeba hartmanni": "Entamoeba hartmanni",
+    "g. duodenalis": "Giardia lamblia",
+    "giardia duodenalis": "Giardia lamblia",
+    "giardia intestinalis": "Giardia lamblia",
 }
 PATOGENICOS = {
     "Enterobius vermicularis",
     "Giardia lamblia",
     "Balantidium coli",
     "Entamoeba histolytica/dispar",
+    "Ascaris lumbricoides",
+    "Trichuris trichiura",
+    "Ancilostomídeos",
+    "Strongyloides stercoralis",
+    "Hymenolepis nana",
+    "Taenia sp.",
+    "Schistosoma mansoni",
 }
-COMENSAIS = {"Endolimax nana", "Iodamoeba butschlii", "Entamoeba coli"}
+# Blastocystis sp. fica de propósito SEM classificação padrão (patogenicidade
+# controversa) — quem usa o sistema decide na configuração.
+COMENSAIS = {"Endolimax nana", "Iodamoeba butschlii", "Entamoeba coli",
+             "Chilomastix mesnili", "Entamoeba hartmanni"}
 NEGATIVE_TOKENS = {"-", "negativo", "neg"}
 INSUFFICIENT_TOKENS = {"amostra insuficiente", "insuficiente"}
 # "Não realizado": o método não chegou a ser executado nessa amostra
@@ -171,6 +234,40 @@ NOT_PERFORMED_TOKENS = {
     "não feito", "nao feito",
     "não executado", "nao executado",
 }
+
+CATEGORIAS_VALIDAS = ("Patogênico", "Comensal", "Não classificado")
+DOMINIO_FECAL = "fecal"
+DOMINIO_LAMINA = "lamina"
+
+
+@dataclass
+class AnalysisConfig:
+    """Configuração da análise definida por quem usa o sistema.
+
+    renomear:   nome detectado -> nome final no relatório ("Agrupar como").
+    excluidos:  nomes DETECTADOS (antes de renomear) que ficam fora da análise.
+    categorias: nome final -> "Patogênico" / "Comensal" / "Não classificado".
+    metodos:    lista de tuplas (coluna, nome, coluna_status, dominio) — mesmo
+                formato de METHOD_CATALOG. None = detectar pela planilha.
+    n_amostras: nº máximo de coletas por paciente (P1..Pn). None = todas.
+    """
+    renomear: dict = field(default_factory=dict)
+    excluidos: set = field(default_factory=set)
+    categorias: dict = field(default_factory=dict)
+    metodos: list | None = None
+    n_amostras: int | None = None
+
+
+def categoria_de(especie, cfg: "AnalysisConfig | None" = None) -> str:
+    """Categoria clínica de uma espécie: primeiro a definida pelo usuário na
+    configuração; senão, a classificação padrão do sistema."""
+    if cfg is not None and especie in cfg.categorias:
+        return cfg.categorias[especie]
+    if especie in PATOGENICOS:
+        return "Patogênico"
+    if especie in COMENSAIS:
+        return "Comensal"
+    return "Não classificado"
 
 # ----------------------------------------------------------------------
 # Catálogo de métodos reconhecidos pelo sistema (coluna, nome de exibição,
@@ -200,7 +297,27 @@ METHOD_COLUMNS = METHOD_CATALOG
 
 REQUIRED_COLUMNS = ["id_paciente", "coleta", "nome_paciente"]
 
-ORDEM_COLETA = {"P1": 1, "P2": 2, "P3": 3}
+ORDEM_COLETA = {"P1": 1, "P2": 2, "P3": 3}  # mantido por compatibilidade
+_COLETA_RE = re.compile(r"^P(\d+)$")
+
+
+def coleta_rank(x):
+    """Número da coleta (P1 -> 1, P7 -> 7) ou None se o rótulo não for Pn."""
+    c = norm_coleta(x)
+    if c is None:
+        return None
+    m = _COLETA_RE.match(c)
+    if not m or int(m.group(1)) < 1:
+        return None
+    return int(m.group(1))
+
+
+def max_coletas(df: pd.DataFrame) -> int:
+    """Maior número de coleta (Pn) presente na planilha — 0 se nenhuma."""
+    if "coleta" not in df.columns:
+        return 0
+    ranks = [r for r in df["coleta"].apply(coleta_rank) if r is not None]
+    return max(ranks) if ranks else 0
 
 # Reconhece uma abreviação de gênero no início do token: uma letra, opcional
 # espaço, ponto, opcional espaço, resto do nome. Usado só para NORMALIZAR o
@@ -288,8 +405,27 @@ def std_status(x):
     return t
 
 
-def parse_result_cell(raw):
-    """Retorna (label, especies, positivo)."""
+def parse_result_cell(raw, cfg: "AnalysisConfig | None" = None):
+    """Retorna (label, especies, positivo), aplicando a configuração (se houver):
+    parasitos excluídos são descartados e "Agrupar como" é aplicado. Uma célula
+    que só continha parasitos excluídos passa a ser lida como negativa."""
+    label, species, positive = _parse_result_cell_raw(raw)
+    if cfg is None or not positive:
+        return (label, species, positive)
+    final = []
+    for s in species:
+        if s in cfg.excluidos:
+            continue
+        s2 = cfg.renomear.get(s, s) or s
+        if s2 not in final:
+            final.append(s2)
+    if not final:
+        return ("Negativo", [], False)
+    return (" + ".join(final), final, True)
+
+
+def _parse_result_cell_raw(raw):
+    """Leitura da célula sem configuração. Retorna (label, especies, positivo)."""
     t = norm_text(raw)
     if t is None:
         return (None, [], False)
@@ -364,7 +500,7 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def validate_columns(df: pd.DataFrame):
+def validate_columns(df: pd.DataFrame, active_methods=None):
     """Valida a planilha enviada. Diferente da v3, NÃO exige mais que todas as
     colunas de método do catálogo estejam presentes — só exige:
       1) as colunas-base (id_paciente, coleta, nome_paciente);
@@ -380,13 +516,13 @@ def validate_columns(df: pd.DataFrame):
             f"Colunas ausentes: {', '.join(missing_base)}. Baixe o modelo novamente e confira os cabeçalhos."
         )
 
-    active = get_active_methods(df)
+    active = get_active_methods(df) if active_methods is None else active_methods
     if not active:
         known = ", ".join(nome for _, nome, _, _ in METHOD_CATALOG)
         errors.append(
-            "Nenhuma coluna de método reconhecida foi encontrada na planilha "
-            f"(procurei por: {known}). Confira se os cabeçalhos de método seguem o "
-            "padrão 'metodo_<nome>' do modelo."
+            "Nenhum método selecionado ou reconhecido na planilha "
+            f"(métodos do catálogo: {known}). Confira os cabeçalhos 'metodo_<nome>' ou "
+            "marque ao menos um método na configuração."
         )
     else:
         domains_present = {m[3] for m in active}
@@ -461,7 +597,7 @@ def _wilson_ci_pairs(numeradores, denominadores):
     return los, his
 
 
-def mcnemar_hpj_willis(por_paciente: pd.DataFrame) -> dict:
+def mcnemar_hpj_willis(por_paciente: pd.DataFrame, active_methods=None) -> dict:
     """Teste de McNemar comparando os métodos diagnósticos HPJ e Willis.
 
     Racional: HPJ e Willis são aplicados à MESMA amostra de fezes da mesma
@@ -498,19 +634,26 @@ def mcnemar_hpj_willis(por_paciente: pd.DataFrame) -> dict:
     Retorna None nos campos numéricos se não houver crianças pareadas
     suficientes (n_pareado = 0), para não quebrar o pipeline.
     """
-    if por_paciente.empty or "status_HPJ" not in por_paciente.columns or "status_Willis" not in por_paciente.columns:
+    nome_hpj, nome_willis = "HPJ", "Willis"
+    if active_methods is not None:
+        by_col = {col: nome for col, nome, _, _ in active_methods}
+        nome_hpj = by_col.get("metodo_hpj")
+        nome_willis = by_col.get("metodo_willis")
+    s_hpj, s_willis = f"status_{nome_hpj}", f"status_{nome_willis}"
+    if (nome_hpj is None or nome_willis is None or por_paciente.empty
+            or s_hpj not in por_paciente.columns or s_willis not in por_paciente.columns):
         return {"n_pareado": 0, "tabela": None, "estatistica": None, "p_valor": None, "metodo": None}
 
     base = por_paciente[
-        por_paciente["status_HPJ"].isin(["positivo", "negativo"])
-        & por_paciente["status_Willis"].isin(["positivo", "negativo"])
+        por_paciente[s_hpj].isin(["positivo", "negativo"])
+        & por_paciente[s_willis].isin(["positivo", "negativo"])
     ]
     n = len(base)
     if n == 0:
         return {"n_pareado": 0, "tabela": None, "estatistica": None, "p_valor": None, "metodo": None}
 
-    hpj_pos = base["status_HPJ"] == "positivo"
-    willis_pos = base["status_Willis"] == "positivo"
+    hpj_pos = base[s_hpj] == "positivo"
+    willis_pos = base[s_willis] == "positivo"
 
     pp = int((hpj_pos & willis_pos).sum())
     pn = int((hpj_pos & ~willis_pos).sum())
@@ -630,7 +773,7 @@ def cochran_armitage_trend(grupos: pd.DataFrame) -> dict:
     }
 
 
-def build_per_child(df: pd.DataFrame, active_methods=None) -> pd.DataFrame:
+def build_per_child(df: pd.DataFrame, active_methods=None, cfg: "AnalysisConfig | None" = None) -> pd.DataFrame:
     """Constrói a base por criança.
 
     active_methods: lista de tuplas (col, nome, status_key, dominio) — os
@@ -682,7 +825,7 @@ def build_per_child(df: pd.DataFrame, active_methods=None) -> pd.DataFrame:
                 status = status_amostra if status_key == "status_amostra" else status_lamina
                 if status != "Entregue":
                     continue  # método não tentado nesta coleta
-                label, species, positive = parse_result_cell(row.get(col))
+                label, species, positive = parse_result_cell(row.get(col), cfg)
                 inst = _classify_instance(label, positive)
                 if inst == "nao_realizado":
                     # Método explicitamente marcado como não executado nesta
@@ -754,8 +897,14 @@ def build_per_child(df: pd.DataFrame, active_methods=None) -> pd.DataFrame:
             "n_especies_distintas_fecais": len(especies_fecais),
             "poliparasitado_fecal": len(especies_fecais) > 1,
 
-            "tem_patogenico": any(e in PATOGENICOS for e in especies_total),
-            "tem_comensal": any(e in COMENSAIS for e in especies_total),
+            "tem_patogenico": any(categoria_de(e, cfg) == "Patogênico" for e in especies_total),
+            "tem_comensal": any(categoria_de(e, cfg) == "Comensal" for e in especies_total),
+            # positividade considerando SÓ parasitos classificados como patogênicos,
+            # separada por domínio (fezes x lâmina)
+            "positivo_fecal_patogenico": positivo_fecal and any(
+                categoria_de(e, cfg) == "Patogênico" for e in especies_fecais),
+            "positivo_lamina_patogenico": positivo_lamina and any(
+                categoria_de(e, cfg) == "Patogênico" for e in especies_lamina),
         }
 
         # Colunas por-método, geradas dinamicamente para cada método ATIVO nesta
@@ -778,6 +927,7 @@ def build_per_child(df: pd.DataFrame, active_methods=None) -> pd.DataFrame:
         "especies_lamina", "especies_lamina_str", "especies", "especies_str",
         "n_especies_distintas_fecais", "poliparasitado_fecal",
         "tem_patogenico", "tem_comensal",
+        "positivo_fecal_patogenico", "positivo_lamina_patogenico",
     ]
     metodo_cols = []
     for _, nome_m, _, _ in active_methods:
@@ -792,7 +942,7 @@ def build_per_child(df: pd.DataFrame, active_methods=None) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def build_fecal_cumulative_curve(df: pd.DataFrame, fecal_methods=None) -> pd.DataFrame:
+def build_fecal_cumulative_curve(df: pd.DataFrame, fecal_methods=None, cfg: "AnalysisConfig | None" = None) -> pd.DataFrame:
     """Curva de positividade cumulativa por nº de potes considerados, medida no MESMO
     grupo de crianças (as que entregaram o número máximo de potes observado no
     estudo) — evita o viés de selecionar subgrupos diferentes de crianças por nº de
@@ -816,13 +966,12 @@ def build_fecal_cumulative_curve(df: pd.DataFrame, fecal_methods=None) -> pd.Dat
             status_amostra = std_status(row.get("status_amostra"))
             if status_amostra != "Entregue":
                 continue
-            coleta = norm_coleta(row.get("coleta"))
-            rank = ORDEM_COLETA.get(coleta)
+            rank = coleta_rank(row.get("coleta"))
             if rank is None:
                 continue
             positivo_instance = False
             for col, nome_m, status_key, dominio in fecal_methods:
-                _, _, positive = parse_result_cell(row.get(col))
+                _, _, positive = parse_result_cell(row.get(col), cfg)
                 if positive:
                     positivo_instance = True
             records.append((id_paciente, rank, positivo_instance))
@@ -879,7 +1028,7 @@ def coletas_nao_reconhecidas(df: pd.DataFrame) -> list:
     if "coleta" not in df.columns or "id_paciente" not in df.columns:
         return []
     validas = df[df["id_paciente"].apply(norm_text).notna()]
-    rotulos = {norm_text(c) for c in validas["coleta"] if norm_coleta(c) not in ORDEM_COLETA}
+    rotulos = {norm_text(c) for c in validas["coleta"] if coleta_rank(c) is None}
     rotulos.discard(None)
     return sorted(rotulos)
 
@@ -945,14 +1094,39 @@ def _empty_metrics(por_paciente: pd.DataFrame, active_methods=None) -> dict:
         "cochran_armitage_efeito_coletas": cochran_armitage_trend(empty_efeito),
         "metodos_ativos": active_methods,
         "metodos_ativos_nomes": [nome for _, nome, _, _ in active_methods],
+        "prev_fecal_patogenico": 0.0,
+        "prev_fecal_patogenico_ic95_inf": None,
+        "prev_fecal_patogenico_ic95_sup": None,
+        "n_fecal_patogenico": 0,
+        "prev_lamina_patogenico": 0.0,
+        "prev_lamina_patogenico_ic95_inf": None,
+        "prev_lamina_patogenico_ic95_sup": None,
+        "n_lamina_patogenico": 0,
+        "especies_lamina_resumo": empty_especies,
+        "config": None,
     }
 
 
-def compute_metrics(df: pd.DataFrame) -> dict:
-    active_methods = get_active_methods(df)
+def aplicar_limite_amostras(df: pd.DataFrame, n_amostras) -> pd.DataFrame:
+    """Descarta as linhas de coletas P(k) com k > n_amostras. Linhas sem rótulo
+    Pn reconhecível são mantidas (o app avisa sobre elas à parte)."""
+    if not n_amostras or "coleta" not in df.columns:
+        return df
+    ranks = df["coleta"].apply(coleta_rank)
+    keep = ranks.isna() | (ranks <= int(n_amostras))
+    return df[keep.values]
+
+
+def compute_metrics(df: pd.DataFrame, cfg: "AnalysisConfig | None" = None) -> dict:
+    if cfg is not None and cfg.metodos is not None:
+        active_methods = [m for m in cfg.metodos if m[0] in df.columns]
+    else:
+        active_methods = get_active_methods(df)
+    if cfg is not None:
+        df = aplicar_limite_amostras(df, cfg.n_amostras)
     fecal_methods_ativos = active_fecal_methods(active_methods)
 
-    por_paciente = build_per_child(df, active_methods)
+    por_paciente = build_per_child(df, active_methods, cfg)
     total = len(por_paciente)
     if total == 0:
         return _empty_metrics(por_paciente, active_methods)
@@ -1026,7 +1200,7 @@ def compute_metrics(df: pd.DataFrame) -> dict:
         especies_resumo = pd.DataFrame([
             {
                 "especie": e, "n": n, "prevalencia": pct(n, len(fecal_conclusivo)),
-                "categoria": "Patogênico" if e in PATOGENICOS else ("Comensal" if e in COMENSAIS else "Não classificado"),
+                "categoria": categoria_de(e, cfg),
             }
             for e, n in especie_count.items()
         ]).sort_values("n", ascending=False).reset_index(drop=True)
@@ -1101,7 +1275,7 @@ def compute_metrics(df: pd.DataFrame) -> dict:
                 "especie": e,
                 "n": n,
                 "prevalencia": pct(n, len(conclusivos)),
-                "categoria": "Patogênico" if e in PATOGENICOS else ("Comensal" if e in COMENSAIS else "Não classificado"),
+                "categoria": categoria_de(e, cfg),
             })
     metodo_especie_resumo = pd.DataFrame(metodo_especie_rows) if metodo_especie_rows else \
         pd.DataFrame(columns=["metodo", "especie", "n", "prevalencia", "categoria"])
@@ -1207,7 +1381,7 @@ def compute_metrics(df: pd.DataFrame) -> dict:
             positivo_mask = positivo_mask | por_paciente[ec].apply(lambda lst: especie in lst)
         base_n = int(conclusivo_mask.sum())
         n = int(positivo_mask.sum())
-        categoria = "Patogênico" if especie in PATOGENICOS else ("Comensal" if especie in COMENSAIS else "Não classificado")
+        categoria = categoria_de(especie, cfg)
         todos_rows.append({
             "especie": especie,
             "categoria": categoria,
@@ -1244,10 +1418,38 @@ def compute_metrics(df: pd.DataFrame) -> dict:
     efeito_n_coletas = pd.DataFrame(efeito_rows).sort_values("n_potes_entregues").reset_index(drop=True) \
         if efeito_rows else pd.DataFrame(columns=["n_potes_entregues", "n_pacientes", "n_positivos", "prevalencia"])
 
-    fecal_cumulativa = build_fecal_cumulative_curve(df, fecal_methods_ativos)
+    fecal_cumulativa = build_fecal_cumulative_curve(df, fecal_methods_ativos, cfg)
+
+    # ---- somente patogênicos, separado por domínio (fezes x lâmina) ----
+    # Mesmos denominadores das prevalências gerais (pacientes conclusivos no
+    # domínio); o numerador conta só quem teve ao menos um parasito
+    # classificado como patogênico naquele domínio.
+    n_fecal_pat = int(fecal_conclusivo["positivo_fecal_patogenico"].sum())
+    n_lamina_pat = int(lamina_conclusivo["positivo_lamina_patogenico"].sum())
+    prev_fecal_patogenico = pct(n_fecal_pat, len(fecal_conclusivo))
+    prev_lamina_patogenico = pct(n_lamina_pat, len(lamina_conclusivo))
+    prev_fecal_pat_ic = wilson_ci(n_fecal_pat, len(fecal_conclusivo))
+    prev_lamina_pat_ic = wilson_ci(n_lamina_pat, len(lamina_conclusivo))
+
+    # ---- prevalência por espécie na LÂMINA (base: lâmina conclusiva) ----
+    especie_count_l = {}
+    for especies in lamina_conclusivo["especies_lamina"]:
+        for e in especies:
+            especie_count_l[e] = especie_count_l.get(e, 0) + 1
+    if especie_count_l:
+        especies_lamina_resumo = pd.DataFrame([
+            {"especie": e, "n": n, "prevalencia": pct(n, len(lamina_conclusivo)),
+             "categoria": categoria_de(e, cfg)}
+            for e, n in especie_count_l.items()
+        ]).sort_values("n", ascending=False).reset_index(drop=True)
+        ic_inf, ic_sup = _wilson_ci_pairs(especies_lamina_resumo["n"], [len(lamina_conclusivo)] * len(especies_lamina_resumo))
+        especies_lamina_resumo["ic95_inf"] = ic_inf
+        especies_lamina_resumo["ic95_sup"] = ic_sup
+    else:
+        especies_lamina_resumo = pd.DataFrame(columns=["especie", "n", "prevalencia", "categoria", "ic95_inf", "ic95_sup"])
 
     # ---- testes de hipótese ----
-    mcnemar_hpj_willis_res = mcnemar_hpj_willis(por_paciente)
+    mcnemar_hpj_willis_res = mcnemar_hpj_willis(por_paciente, active_methods)
     cochran_armitage_res = cochran_armitage_trend(efeito_n_coletas)
 
     return {
@@ -1289,4 +1491,14 @@ def compute_metrics(df: pd.DataFrame) -> dict:
         "cochran_armitage_efeito_coletas": cochran_armitage_res,
         "metodos_ativos": active_methods,
         "metodos_ativos_nomes": [nome for _, nome, _, _ in active_methods],
+        "prev_fecal_patogenico": prev_fecal_patogenico,
+        "prev_fecal_patogenico_ic95_inf": prev_fecal_pat_ic[0],
+        "prev_fecal_patogenico_ic95_sup": prev_fecal_pat_ic[1],
+        "n_fecal_patogenico": n_fecal_pat,
+        "prev_lamina_patogenico": prev_lamina_patogenico,
+        "prev_lamina_patogenico_ic95_inf": prev_lamina_pat_ic[0],
+        "prev_lamina_patogenico_ic95_sup": prev_lamina_pat_ic[1],
+        "n_lamina_patogenico": n_lamina_pat,
+        "especies_lamina_resumo": especies_lamina_resumo,
+        "config": cfg,
     }
