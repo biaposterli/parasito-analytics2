@@ -200,6 +200,20 @@ def _styles():
     return styles
 
 
+def _prev_txt(prev, n):
+    """'—' quando não há paciente conclusivo no denominador (0,0% daria a
+    entender que houve exame e deu negativo)."""
+    return f"{prev:.1f}%" if n else "—"
+
+
+def _base_txt(pos, n, tem_metodo, dominio):
+    if not tem_metodo:
+        return f"Não avaliado: nenhum método de {dominio} nesta planilha"
+    if not n:
+        return "Não avaliado: nenhum resultado conclusivo"
+    return f"{pos} de {n} pacientes (conclusivas)"
+
+
 def _stat_table(metrics):
     # Coluna do meio: prevalência de lâmina calculada sobre TODOS os pacientes com
     # resultado conclusivo de lâmina (lamina_conclusivo) — não mais restrita ao
@@ -207,20 +221,32 @@ def _stat_table(metrics):
     # item 12). O subgrupo "só lâmina" continua disponível em
     # metrics['lamina_only_conclusivo'] / ['lamina_only_inconclusivo'] e é citado
     # à parte, na nota de atenção logo abaixo desta tabela.
+    dominios = {m[3] for m in metrics.get("metodos_ativos", [])}
+    n_f = len(metrics["fecal_conclusivo"])
+    n_l = len(metrics["lamina_conclusivo"])
+    n_c = len(metrics["combinada_base"])
     data = [
         ["PREVALÊNCIA — AMOSTRA FECAL", "PREVALÊNCIA — LÂMINA (TODOS)", "PREVALÊNCIA COMBINADA"],
-        [f"{metrics['prev_fecal']:.1f}%", f"{metrics['prev_lamina']:.1f}%", f"{metrics['prev_combinada']:.1f}%"],
+        [_prev_txt(metrics['prev_fecal'], n_f), _prev_txt(metrics['prev_lamina'], n_l),
+         _prev_txt(metrics['prev_combinada'], n_c)],
         [
             f"IC95% {_ic_texto(metrics['prev_fecal_ic95_inf'], metrics['prev_fecal_ic95_sup'])}",
             f"IC95% {_ic_texto(metrics['prev_lamina_ic95_inf'], metrics['prev_lamina_ic95_sup'])}",
             f"IC95% {_ic_texto(metrics['prev_combinada_ic95_inf'], metrics['prev_combinada_ic95_sup'])}",
         ],
         [
-            f"{int(metrics['fecal_conclusivo']['positivo_fecal'].sum())} de {len(metrics['fecal_conclusivo'])} pacientes (conclusivas)",
-            f"{int(metrics['lamina_conclusivo']['positivo_lamina'].sum())} de {len(metrics['lamina_conclusivo'])} pacientes (conclusivas)",
-            f"{int(metrics['combinada_base']['positivo_algum_metodo'].sum())} de {len(metrics['combinada_base'])} pacientes (conclusivas)",
+            _base_txt(int(metrics['fecal_conclusivo']['positivo_fecal'].sum()), n_f, "fecal" in dominios, "fezes"),
+            _base_txt(int(metrics['lamina_conclusivo']['positivo_lamina'].sum()), n_l, "lamina" in dominios, "lâmina"),
+            _base_txt(int(metrics['combinada_base']['positivo_algum_metodo'].sum()), n_c, True, ""),
         ],
     ]
+    # linhas de IC e de base viram Paragraph para quebrar linha dentro da
+    # célula (textos de "Não avaliado" não cabem numa linha só)
+    ic_style = ParagraphStyle("lp_stat_ic", fontName="Helvetica", fontSize=8, leading=10, textColor=TEAL)
+    base_style = ParagraphStyle("lp_stat_base", fontName="Helvetica", fontSize=8, leading=10,
+                                textColor=colors.HexColor("#7C8B81"))
+    data[2] = [Paragraph(txt if n else "", ic_style) for txt, n in zip(data[2], (n_f, n_l, n_c))]
+    data[3] = [Paragraph(txt, base_style) for txt in data[3]]
     t = Table(data, colWidths=[56 * mm, 56 * mm, 56 * mm])
     t.setStyle(TableStyle([
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
@@ -267,10 +293,12 @@ def _with_ic_column(df, prev_col="prevalencia", inf_col="ic95_inf", sup_col="ic9
     return out
 
 
-def _df_table(df, col_labels=None, col_widths=None, max_rows=None):
+def _df_table(df, col_labels=None, col_widths=None, max_rows=None, font_size=8, h_padding=6):
     styles = _styles()
-    cell_style = ParagraphStyle("lp_cell", parent=styles["body"], fontSize=8, leading=10.5, textColor=INK)
-    header_style = ParagraphStyle("lp_cell_header", parent=styles["body"], fontSize=8,
+    cell_style = ParagraphStyle("lp_cell", parent=styles["body"], fontSize=font_size,
+                                leading=font_size * 1.3, textColor=INK)
+    header_style = ParagraphStyle("lp_cell_header", parent=styles["body"], fontSize=font_size,
+                                   leading=font_size * 1.25,
                                    fontName="Helvetica-Bold", textColor=colors.HexColor("#7C8B81"))
     if df.empty:
         return Paragraph("Sem dados.", styles["body"])
@@ -286,6 +314,8 @@ def _df_table(df, col_labels=None, col_widths=None, max_rows=None):
         ("LINEBELOW", (0, 1), (-1, -1), 0.4, LINE),
         ("TOPPADDING", (0, 0), (-1, -1), 4),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), h_padding),
+        ("RIGHTPADDING", (0, 0), (-1, -1), h_padding),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
     ]))
     return t
@@ -354,7 +384,7 @@ def build_pdf_report(metrics: dict, logo_path: str | None = None) -> bytes:
             "insuficiente\" (ou sem resultado registrado)"
             + (f"; {len(metrics['lamina_inconclusivo'])} paciente(s) com lâmina entregue na mesma "
                "situação" if len(metrics['lamina_inconclusivo']) else "")
-            + ". Esses pacientes foram excluídoss dos denominadores de prevalência — não contam "
+            + ". Esses pacientes foram excluídos dos denominadores de prevalência — não contam "
               "como negativas."
         )
         story.append(Paragraph(note_inc, styles["note"]))
@@ -418,9 +448,24 @@ def build_pdf_report(metrics: dict, logo_path: str | None = None) -> bytes:
         ).reindex(columns=metodos_ativos_nomes)
         pivot_df = pivot.reset_index().rename(columns={"especie": "Espécie"})
         pivot_df = pivot_df.fillna("—")
-        n_metodo_cols = len(metodos_ativos_nomes)
-        col_w = [50 * mm] + [max(18, 100 // max(n_metodo_cols, 1)) * mm] * n_metodo_cols
-        story.append(_df_table(pivot_df, col_widths=col_w))
+        # cabeçalho com quebra de linha em hífen e antes de parênteses, para
+        # nomes longos ("Baermann-Picanço", "Ritchie (formol-éter)") não serem
+        # cortados no meio da palavra em colunas estreitas
+        pivot_labels = ["Espécie"] + [
+            str(c).replace("-", "-<br/>").replace(" (", "<br/>(") for c in pivot_df.columns[1:]
+        ]
+        # largura útil da página A4 com margens de 18 mm = 174 mm. Antes cada
+        # coluna de método tinha no mínimo 18 mm, e com 6+ métodos a tabela
+        # passava da margem direita. Agora as colunas dividem o espaço que
+        # sobra (até 25 mm cada) e a fonte diminui quando há muitos métodos.
+        n_metodo_cols = max(len(metodos_ativos_nomes), 1)
+        largura_util = 174
+        col_especie = 44 if n_metodo_cols > 5 else 50
+        col_metodo = min(25, (largura_util - col_especie) / n_metodo_cols)
+        col_w = [col_especie * mm] + [col_metodo * mm] * n_metodo_cols
+        story.append(_df_table(pivot_df, col_labels=pivot_labels, col_widths=col_w,
+                               font_size=7 if n_metodo_cols > 5 else 8,
+                               h_padding=2 if n_metodo_cols > 5 else 6))
         story.append(Spacer(1, 2 * mm))
         story.append(Paragraph(
             "Intervalos de confiança de 95% (Wilson) correspondentes a cada célula acima:",
