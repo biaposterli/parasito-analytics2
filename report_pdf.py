@@ -321,6 +321,99 @@ def _df_table(df, col_labels=None, col_widths=None, max_rows=None, font_size=8, 
     return t
 
 
+# ---------------------------------------------------------------- v8
+def _resumo_config(metrics):
+    """Texto curto com a configuração usada na análise (ou None)."""
+    cfg = metrics.get("config")
+    if cfg is None:
+        return None
+    fezes = [n for _, n, _, d in metrics.get("metodos_ativos", []) if d == "fecal"]
+    lamina = [n for _, n, _, d in metrics.get("metodos_ativos", []) if d == "lamina"]
+    pat = sorted(e for e, c in cfg.categorias.items() if c == "Patogênico")
+    com = sorted(e for e, c in cfg.categorias.items() if c == "Comensal")
+    partes = [
+        f"<b>Métodos de fezes:</b> {', '.join(fezes) or '—'}",
+        f"<b>Métodos de lâmina:</b> {', '.join(lamina) or '—'}",
+        f"<b>Amostras por paciente:</b> até P{cfg.n_amostras}" if cfg.n_amostras else "<b>Amostras por paciente:</b> todas",
+        f"<b>Patogênicos:</b> {', '.join(pat) or '—'}",
+        f"<b>Comensais:</b> {', '.join(com) or '—'}",
+    ]
+    if cfg.excluidos:
+        partes.append(f"<b>Excluídos da análise:</b> {', '.join(sorted(cfg.excluidos))}")
+    return " &middot; ".join(partes)
+
+
+def _chart_especies_titulo(especies_df, titulo):
+    if especies_df.empty:
+        return None
+    df = especies_df.sort_values("prevalencia")
+    colors_map = {"Patogênico": MPL_BRICK, "Comensal": MPL_AMBER, "Não classificado": MPL_SAGE}
+    bar_colors = [colors_map.get(c, MPL_SAGE) for c in df["categoria"]]
+    fig, ax = plt.subplots(figsize=(4.2, max(1.8, 0.42 * len(df) + 0.6)))
+    ax.barh(df["especie"], df["prevalencia"], color=bar_colors)
+    ax.set_title(titulo, fontsize=9, loc="left", color="#11483D")
+    ax.set_xlabel("Prevalência (%)", fontsize=8)
+    ax.tick_params(labelsize=7)
+    vmax = float(df["prevalencia"].max())
+    ax.set_xlim(0, max(10.0, min(115.0, vmax * 1.3)))
+    for i, v in enumerate(df["prevalencia"]):
+        ax.text(v + 0.5, i, f"{v}%", va="center", fontsize=7)
+    fig.tight_layout()
+    return _fig_to_image(fig, width_mm=84)
+
+
+def _secao_dominio(story, styles, titulo, esp_df, n_base, n_pos, prev, ic, n_pat, prev_pat, ic_pat, tem_metodo):
+    story.append(Paragraph(titulo, styles["h2"]))
+    if not tem_metodo:
+        story.append(Paragraph("Nenhum método deste tipo de amostra foi incluído na análise.", styles["body"]))
+        return
+    if not n_base:
+        story.append(Paragraph("Nenhum resultado conclusivo neste tipo de amostra.", styles["body"]))
+        return
+    story.append(Paragraph(
+        f"<b>Todos os parasitos:</b> {prev:.1f}% ({n_pos} de {n_base}; IC95% {_ic_texto(*ic)}) &middot; "
+        f"<b>Somente patogênicos:</b> {prev_pat:.1f}% ({n_pat} de {n_base}; IC95% {_ic_texto(*ic_pat)}). "
+        "Base: pacientes com resultado conclusivo neste tipo de amostra.",
+        styles["body"],
+    ))
+    story.append(Spacer(1, 2 * mm))
+    img_all = _chart_especies_titulo(esp_df, "Todos os parasitos")
+    pat_df = esp_df[esp_df["categoria"] == "Patogênico"] if not esp_df.empty else esp_df
+    img_pat = _chart_especies_titulo(pat_df, "Somente patogênicos")
+    cells = [img_all or Paragraph("Nenhum parasito detectado.", styles["small"]),
+             img_pat or Paragraph("Nenhum parasito patogênico detectado.", styles["small"])]
+    t = Table([cells], colWidths=[87 * mm, 87 * mm])
+    t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
+    story.append(t)
+    if not esp_df.empty:
+        story.append(Spacer(1, 2 * mm))
+        tab = _with_ic_column(esp_df).rename(columns={
+            "especie": "Espécie", "n": "N", "prevalencia": "Prevalência %", "categoria": "Categoria", "ic95": "IC 95%"})
+        story.append(_df_table(tab, col_widths=[52 * mm, 16 * mm, 24 * mm, 26 * mm, 26 * mm]))
+
+
+def _secoes_por_dominio(story, styles, metrics):
+    dominios = {m[3] for m in metrics.get("metodos_ativos", [])}
+    lam_nomes = [n for _, n, _, d in metrics.get("metodos_ativos", []) if d == "lamina"]
+    fc, lc = metrics["fecal_conclusivo"], metrics["lamina_conclusivo"]
+    _secao_dominio(
+        story, styles, "Parasitos em amostras de fezes — todos x somente patogênicos",
+        metrics["especies_resumo"], len(fc), int(fc["positivo_fecal"].sum()) if len(fc) else 0,
+        metrics["prev_fecal"], (metrics["prev_fecal_ic95_inf"], metrics["prev_fecal_ic95_sup"]),
+        metrics["n_fecal_patogenico"], metrics["prev_fecal_patogenico"],
+        (metrics["prev_fecal_patogenico_ic95_inf"], metrics["prev_fecal_patogenico_ic95_sup"]),
+        "fecal" in dominios,
+    )
+    _secao_dominio(
+        story, styles, f"Parasitos na lâmina ({' / '.join(lam_nomes) or 'Graham'}) — todos x somente patogênicos",
+        metrics["especies_lamina_resumo"], len(lc), int(lc["positivo_lamina"].sum()) if len(lc) else 0,
+        metrics["prev_lamina"], (metrics["prev_lamina_ic95_inf"], metrics["prev_lamina_ic95_sup"]),
+        metrics["n_lamina_patogenico"], metrics["prev_lamina_patogenico"],
+        (metrics["prev_lamina_patogenico_ic95_inf"], metrics["prev_lamina_patogenico_ic95_sup"]),
+        "lamina" in dominios,
+    )
+
+
 def build_pdf_report(metrics: dict, logo_path: str | None = None) -> bytes:
     styles = _styles()
     buf = io.BytesIO()
@@ -366,6 +459,10 @@ def build_pdf_report(metrics: dict, logo_path: str | None = None) -> bytes:
         f"analisados: {', '.join(metodos_ativos_nomes) if metodos_ativos_nomes else '—'}.",
         styles["body"],
     ))
+    cfg_txt = _resumo_config(metrics)
+    if cfg_txt:
+        story.append(Spacer(1, 2 * mm))
+        story.append(Paragraph("<b>Configuração da análise</b> &middot; " + cfg_txt, styles["small"]))
     story.append(Spacer(1, 4 * mm))
 
     # ---- resumo executivo ----
@@ -401,6 +498,9 @@ def build_pdf_report(metrics: dict, logo_path: str | None = None) -> bytes:
             f"de {len(metrics['lamina_only_conclusivo'])} pacientes conclusivos)."
         )
         story.append(Paragraph(note, styles["note"]))
+
+    # ---- v8: fezes x lâmina, todos x somente patogênicos ----
+    _secoes_por_dominio(story, styles, metrics)
 
     # ---- profundidade de amostragem ----
     story.append(Paragraph("Pacientes por profundidade de amostragem", styles["h2"]))
@@ -630,7 +730,7 @@ def build_pdf_report(metrics: dict, logo_path: str | None = None) -> bytes:
     story.append(Spacer(1, 3 * mm))
     story.append(Paragraph(
         "Nota metodológica: a prevalência é calculada por paciente, não por exame — uma criança conta "
-        "como positiva se qualquer uma de suas coletas (P1/P2/P3) revelou o parasita. O pote de "
+        "como positiva se qualquer uma de suas coletas (P1, P2, ... Pn) revelou o parasita. O pote de "
         "fezes alimenta os métodos de domínio fecal; a lâmina alimenta exclusivamente os métodos de "
         "domínio lâmina/swab. Pacientes cujos únicos resultados foram \"Amostra insuficiente\" são "
         "reportadas à parte como inconclusivas e não entram nos denominadores de prevalência. Uma "
