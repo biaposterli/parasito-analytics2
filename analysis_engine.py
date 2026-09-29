@@ -97,6 +97,29 @@ Alterações da v5 -> v6:
      para quem quiser essa quebra específica, mas não é mais a base da
      métrica principal exibida no resumo executivo. Ver prev_lamina,
      lamina_conclusivo e lamina_inconclusivo.
+
+Alterações da v6 -> v7:
+ 13) Rótulos de coleta normalizados (norm_coleta): "p1", " P2 ", "P 3" passam a
+     ser lidos como P1/P2/P3. Antes, qualquer variação de maiúscula/espaço
+     fazia a coleta sumir da curva cumulativa sem aviso. Rótulos que mesmo
+     assim não são reconhecidos são listados por coletas_nao_reconhecidas(df)
+     para o app avisar.
+ 14) Curva cumulativa (build_fecal_cumulative_curve) corrigida em dois pontos:
+       - o grupo acompanhado passa a ser o de pacientes que entregaram o
+         número MÁXIMO de potes (como o texto do relatório sempre disse) — antes
+         usava a moda, e se a maioria tinha entregado 1 pote a curva ficava com
+         um ponto só;
+       - a posição de cada pote passa a ser a ORDEM das coletas entregues
+         (1ª, 2ª, 3ª entregue), não o número do rótulo. Antes, quem entregou P1
+         e P3 (sem P2) tinha a P3 ignorada no passo k=2.
+ 15) Linhas duplicadas (mesmo paciente + mesma coleta) não contam mais como
+     dois potes/lâminas: n_coletas_pote_entregue e n_coletas_lamina_entregue
+     contam coletas DISTINTAS. Os resultados das linhas duplicadas continuam
+     sendo lidos (positivo em qualquer uma = positivo), e
+     coletas_duplicadas(df) lista os casos para o app avisar.
+ 16) Marcação de intensidade entre parênteses — "(+)", "(++)", "(+++)" — e
+     sequências "++"/"+++" coladas ao nome são removidas antes de separar as
+     espécies. Antes, "E. nana (+)" virava duas "espécies" ("E. nana (" e ")").
 """
 import math
 import re
@@ -212,6 +235,17 @@ def normalize_species_token(p: str) -> str:
     return p
 
 
+def norm_coleta(x):
+    """Normaliza o rótulo da coleta: tira espaços (inclusive internos) e põe em
+    maiúsculas — "p1", " P2 ", "P 3" -> "P1", "P2", "P3". Não converte outros
+    formatos (ex.: "1", "1ª coleta") — esses são reportados por
+    coletas_nao_reconhecidas para o usuário corrigir na planilha."""
+    t = norm_text(x)
+    if t is None:
+        return None
+    return re.sub(r"\s+", "", t).upper()
+
+
 def norm_text(x):
     if x is None or (isinstance(x, float) and pd.isna(x)):
         return None
@@ -260,7 +294,11 @@ def parse_result_cell(raw):
     if t is None:
         return (None, [], False)
     low = t.lower()
-    cleaned = low.replace("+++", "").strip()
+    # Remove marcação de intensidade antes de separar espécies por '+':
+    # "(+)", "(++)", "(+++)" e sequências de 2+ sinais ("++", "+++").
+    cleaned = re.sub(r"\(\s*\++\s*\)", " ", low)
+    cleaned = re.sub(r"\+{2,}", " ", cleaned)
+    cleaned = " ".join(cleaned.split())
     if cleaned in NOT_PERFORMED_TOKENS:
         return ("Não realizado", [], False)
     if cleaned in NEGATIVE_TOKENS or low == "-":
@@ -611,8 +649,11 @@ def build_per_child(df: pd.DataFrame, active_methods=None) -> pd.DataFrame:
         if id_paciente is None:
             continue
         nome = norm_text(g["nome_paciente"].iloc[0]) or ""
-        n_pote = 0
-        n_lamina = 0
+        # coletas DISTINTAS com material entregue — uma linha duplicada (mesmo
+        # paciente + mesma coleta) não conta como um pote/lâmina a mais. Linha
+        # sem rótulo de coleta conta por si só (não há como saber se repete).
+        pote_coletas = set()
+        lamina_coletas = set()
 
         especies_fecais_set = set()
         especies_lamina_set = set()
@@ -628,13 +669,14 @@ def build_per_child(df: pd.DataFrame, active_methods=None) -> pd.DataFrame:
         # espécie x método na tabela "todos os parasitos")
         especies_por_metodo = {nome_m: set() for _, nome_m, _, _ in active_methods}
 
-        for _, row in g.iterrows():
+        for idx, row in g.iterrows():
             status_amostra = std_status(row.get("status_amostra"))
             status_lamina = std_status(row.get("status_lamina"))
+            coleta_key = norm_coleta(row.get("coleta")) or f"__linha_{idx}"
             if status_amostra == "Entregue":
-                n_pote += 1
+                pote_coletas.add(coleta_key)
             if status_lamina == "Entregue":
-                n_lamina += 1
+                lamina_coletas.add(coleta_key)
 
             for col, nome_m, status_key, dominio in active_methods:
                 status = status_amostra if status_key == "status_amostra" else status_lamina
@@ -661,6 +703,9 @@ def build_per_child(df: pd.DataFrame, active_methods=None) -> pd.DataFrame:
                         especies_fecais_set.update(species)
                     else:
                         especies_lamina_set.update(species)
+
+        n_pote = len(pote_coletas)
+        n_lamina = len(lamina_coletas)
 
         fecal_status = _reduce_status(fecal_instances)
         lamina_status = _reduce_status(lamina_instances)
@@ -748,7 +793,7 @@ def build_per_child(df: pd.DataFrame, active_methods=None) -> pd.DataFrame:
 
 
 def build_fecal_cumulative_curve(df: pd.DataFrame, fecal_methods=None) -> pd.DataFrame:
-    """Curva de positividade cumulativa por nº de potes considerados, medida na MESMA
+    """Curva de positividade cumulativa por nº de potes considerados, medida no MESMO
     grupo de crianças (as que entregaram o número máximo de potes observado no
     estudo) — evita o viés de selecionar subgrupos diferentes de crianças por nº de
     potes entregues (quem entrega mais pode diferir sistematicamente de quem entrega
@@ -771,7 +816,7 @@ def build_fecal_cumulative_curve(df: pd.DataFrame, fecal_methods=None) -> pd.Dat
             status_amostra = std_status(row.get("status_amostra"))
             if status_amostra != "Entregue":
                 continue
-            coleta = norm_text(row.get("coleta"))
+            coleta = norm_coleta(row.get("coleta"))
             rank = ORDEM_COLETA.get(coleta)
             if rank is None:
                 continue
@@ -787,21 +832,56 @@ def build_fecal_cumulative_curve(df: pd.DataFrame, fecal_methods=None) -> pd.Dat
         return pd.DataFrame(columns=cols)
 
     rec_df = pd.DataFrame(records, columns=["id_paciente", "rank", "positivo"])
-    n_by_child = rec_df.groupby("id_paciente")["rank"].nunique()
+    # linhas duplicadas da mesma coleta viram uma só (positiva se qualquer uma for)
+    rec_df = rec_df.groupby(["id_paciente", "rank"], as_index=False)["positivo"].any()
+    # posição = ordem das coletas ENTREGUES (1ª, 2ª, 3ª), não o número do
+    # rótulo: quem entregou P1 e P3 tem P3 como 2º pote.
+    rec_df = rec_df.sort_values(["id_paciente", "rank"])
+    rec_df["ordem"] = rec_df.groupby("id_paciente").cumcount() + 1
+    n_by_child = rec_df.groupby("id_paciente")["ordem"].max()
     if n_by_child.empty:
         return pd.DataFrame(columns=cols)
-    max_n = int(n_by_child.mode().iloc[0])
+    # grupo acompanhado = pacientes que entregaram o número MÁXIMO de potes
+    max_n = int(n_by_child.max())
     cohort_ids = n_by_child[n_by_child == max_n].index
     cohort = rec_df[rec_df["id_paciente"].isin(cohort_ids)]
 
     out_rows = []
     n = len(cohort_ids)
     for k in range(1, max_n + 1):
-        sub = cohort[cohort["rank"] <= k]
+        sub = cohort[cohort["ordem"] <= k]
         cum_pos = sub.groupby("id_paciente")["positivo"].any().reindex(cohort_ids, fill_value=False)
         pos = int(cum_pos.sum())
         out_rows.append({"k": k, "n_pacientes": n, "prevalencia_cumulativa": round(100 * pos / n, 1) if n else 0.0})
     return pd.DataFrame(out_rows)
+
+
+def coletas_duplicadas(df: pd.DataFrame) -> pd.DataFrame:
+    """Lista pares (paciente, coleta) que aparecem em mais de uma linha da
+    planilha — provável erro de digitação/cópia. Usado pelo app para avisar."""
+    cols = ["id_paciente", "coleta", "n_linhas"]
+    if "id_paciente" not in df.columns or "coleta" not in df.columns:
+        return pd.DataFrame(columns=cols)
+    tmp = pd.DataFrame({
+        "id_paciente": df["id_paciente"].apply(norm_text),
+        "coleta": df["coleta"].apply(norm_coleta),
+    }).dropna()
+    if tmp.empty:
+        return pd.DataFrame(columns=cols)
+    cont = tmp.groupby(["id_paciente", "coleta"]).size().reset_index(name="n_linhas")
+    return cont[cont["n_linhas"] > 1].reset_index(drop=True)
+
+
+def coletas_nao_reconhecidas(df: pd.DataFrame) -> list:
+    """Rótulos de coleta preenchidos que não são P1/P2/P3 (após normalização).
+    Essas linhas continuam valendo para as prevalências, mas ficam fora da
+    curva cumulativa — o app avisa para o usuário corrigir."""
+    if "coleta" not in df.columns or "id_paciente" not in df.columns:
+        return []
+    validas = df[df["id_paciente"].apply(norm_text).notna()]
+    rotulos = {norm_text(c) for c in validas["coleta"] if norm_coleta(c) not in ORDEM_COLETA}
+    rotulos.discard(None)
+    return sorted(rotulos)
 
 
 def _empty_metrics(por_paciente: pd.DataFrame, active_methods=None) -> dict:
