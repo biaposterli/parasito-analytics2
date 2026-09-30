@@ -831,10 +831,13 @@ with st.sidebar:
     st.divider()
     st.markdown('<span class="lapahv-eyebrow">Sobre as amostras</span>', unsafe_allow_html=True)
     st.caption(
-        "**Pote de fezes** → HPJ, Willis, Baermann-Picanço, Faust, Kato-Katz, MIFC, Ritchie.\n\n"
-        "**Lâmina (swab)** → Graham.\n\n"
-        "A planilha não precisa trazer todos — o sistema lê os métodos que estiverem presentes "
-        "e ignora os que faltarem."
+        "Alguns dos métodos aceitos, por tipo de amostra:\n\n"
+        "**Pote de fezes** → HPJ, Willis, Baermann-Picanço, Faust, Kato-Katz, MIFC, Ritchie, "
+        "entre outros.\n\n"
+        "**Lâmina (swab)** → Graham, entre outros.\n\n"
+        "Outros métodos também podem ser usados: basta incluir a coluna na planilha e indicar, "
+        "no passo 03, se é de fezes ou de lâmina. A planilha não precisa trazer todos os métodos "
+        "listados, só os que você usou."
     )
 
     st.divider()
@@ -877,33 +880,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-diag1, diag2 = st.columns(2)
-with diag1:
-    fecal_tags = "".join(
-        f'<span class="lapahv-tag" style="border-color:{LINE}; color:{INK_SOFT};">{nome}</span>'
-        for _, nome, _, dominio in METHOD_CATALOG if dominio == "fecal"
-    )
-    st.markdown(
-        f"""<div class="lapahv-card">
-        <span class="kicker">Pote de fezes</span>
-        {fecal_tags}
-        </div>""",
-        unsafe_allow_html=True,
-    )
-with diag2:
-    lamina_tags = "".join(
-        f'<span class="lapahv-tag" style="border-color:{LINE}; color:{INK_SOFT};">{nome}</span>'
-        for _, nome, _, dominio in METHOD_CATALOG if dominio == "lamina"
-    )
-    st.markdown(
-        f"""<div class="lapahv-card">
-        <span class="kicker">Lâmina (swab)</span>
-        {lamina_tags}
-        </div>""",
-        unsafe_allow_html=True,
-    )
-
-st.write("")
 
 # ==================================================================
 # PASSO 01 — Baixar modelo
