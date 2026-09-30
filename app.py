@@ -864,13 +864,15 @@ st.markdown(
 # ==================================================================
 st.markdown(
     """<div class="lapahv-hero">
-    <span class="lapahv-eyebrow">Métodos diversos, um relatório correto</span>
     <h2>Seus dados de coleta, transformados em relatório epidemiológico.</h2>
-    <p>Fezes e lâmina seguem caminhos diagnósticos diferentes, e cada laboratório usa o conjunto de
-    métodos que lhe é próprio. Baixe o modelo, preencha os dados da sua pesquisa e envie abaixo: o
-    sistema reconhece sozinho quais métodos estão na planilha, mantém os denominadores corretos
-    para cada um e gera prevalências, intervalos de confiança e testes estatísticos — pronto para
-    qualquer população em estudo.</p>
+    <p>Baixe o modelo de planilha e registre uma linha por coleta de cada paciente (P1, P2, P3…),
+    com o resultado de cada método. Ao enviar a planilha, você escolhe quais parasitos entram na
+    análise, classifica cada um como patogênico ou comensal e define os métodos e a quantidade de
+    amostras consideradas. O relatório mostra a prevalência por paciente, sempre separada entre
+    fezes e lâmina (Graham), considerando todos os parasitos e só os patogênicos, com intervalos
+    de confiança de 95%, comparação entre métodos e efeito do número de amostras. Amostras
+    insuficientes não entram no cálculo como negativas. No final, você baixa o relatório em PDF e
+    em Excel.</p>
     </div>""",
     unsafe_allow_html=True,
 )
