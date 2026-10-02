@@ -43,6 +43,7 @@ from analysis_config import (
     planilha_com_config_bytes,
 )
 from report_pdf import build_pdf_report
+from estilo_planilha import estilizar_modelo
 
 APP_DIR = Path(__file__).parent
 
@@ -851,7 +852,14 @@ def generate_template_bytes() -> bytes:
         # site já abre a configuração da análise preenchida com elas.
         for nome_aba, aba in abas_config_modelo().items():
             aba.to_excel(writer, sheet_name=nome_aba, index=False)
-    return buf.getvalue()
+    # acabamento visual (cores, larguras, listas suspensas) — não altera dados
+    return estilizar_modelo(
+        buf.getvalue(),
+        logo_path=LOGO_PDF_PATH,
+        categorias=CATEGORIAS_VALIDAS,
+        amostras=AMOSTRAS_VALIDAS,
+        colunas_lamina=set(metodo_cols_lamina),
+    )
 
 
 TEMPLATE_BYTES = generate_template_bytes()
