@@ -31,6 +31,8 @@ from analysis_engine import (
     max_coletas,
 )
 
+from estilo_planilha import estilizar_config
+
 SHEET_PARASITOS = "Config_Parasitos"
 SHEET_METODOS = "Config_Metodos"
 SHEET_AMOSTRAS = "Config_Amostras"
@@ -375,7 +377,7 @@ def config_xlsx_bytes(parasitos, metodos, n_amostras) -> bytes:
         for nome, d in _abas_config(parasitos, metodos, n_amostras).items():
             d.to_excel(w, sheet_name=nome, index=False)
             _ajustar_larguras(w.sheets[nome])
-    return buf.getvalue()
+    return estilizar_config(buf.getvalue(), CATEGORIAS_VALIDAS, AMOSTRAS_VALIDAS)
 
 
 def planilha_com_config_bytes(original: bytes, parasitos, metodos, n_amostras) -> bytes:
@@ -395,7 +397,7 @@ def planilha_com_config_bytes(original: bytes, parasitos, metodos, n_amostras) -
             _ajustar_larguras(ws)
         buf = io.BytesIO()
         wb.save(buf)
-        return buf.getvalue()
+        return estilizar_config(buf.getvalue(), CATEGORIAS_VALIDAS, AMOSTRAS_VALIDAS)
     except Exception:  # noqa: BLE001 — ex.: .xls antigo; reescreve só os dados
         xls = pd.ExcelFile(io.BytesIO(original))
         buf = io.BytesIO()
@@ -406,7 +408,7 @@ def planilha_com_config_bytes(original: bytes, parasitos, metodos, n_amostras) -
                 pd.read_excel(xls, sheet_name=s).to_excel(w, sheet_name=s[:31], index=False)
             for nome, d in abas.items():
                 d.to_excel(w, sheet_name=nome, index=False)
-        return buf.getvalue()
+        return estilizar_config(buf.getvalue(), CATEGORIAS_VALIDAS, AMOSTRAS_VALIDAS)
 
 
 def abas_config_modelo() -> dict[str, pd.DataFrame]:

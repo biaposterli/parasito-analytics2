@@ -42,8 +42,8 @@ from analysis_config import (
     montar_tabelas_iniciais,
     planilha_com_config_bytes,
 )
-from report_pdf import build_pdf_report
-from estilo_planilha import estilizar_modelo
+from report_pdf import _agora, build_pdf_report
+from estilo_planilha import estilizar_modelo, estilizar_relatorio
 
 APP_DIR = Path(__file__).parent
 
@@ -1533,7 +1533,21 @@ if uploaded_file is not None:
                             cfg_xls = pd.ExcelFile(io.BytesIO(config_xlsx_bytes(ss_["cfg_par"], ss_["cfg_met"], ss_["cfg_n"])))
                             for aba in cfg_xls.sheet_names:
                                 pd.read_excel(cfg_xls, sheet_name=aba).to_excel(writer, sheet_name=aba, index=False)
-                    return buf.getvalue()
+                    # capa com sumário + formatação Pirajá (não altera valores)
+                    agora = _agora(getattr(st.context, "timezone", None))
+                    resumo = (
+                        f"{m['total']} pacientes cadastrados · {len(m['fecal'])} com amostra fecal entregue · "
+                        f"{len(m['apenas_lamina'])} só com lâmina · métodos: "
+                        f"{', '.join(metodo_nomes) if metodo_nomes else '—'}."
+                    )
+                    return estilizar_relatorio(
+                        buf.getvalue(),
+                        logo_path=LOGO_PDF_PATH,
+                        gerado_em=f"Gerado em {agora.strftime('%d/%m/%Y às %H:%M')}",
+                        resumo=resumo,
+                        categorias=CATEGORIAS_VALIDAS,
+                        amostras=AMOSTRAS_VALIDAS,
+                    )
 
                 with tab_export:
                     section_title("Baixe os relatórios completos")
