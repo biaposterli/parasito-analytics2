@@ -1,4 +1,4 @@
-"""Motor de análise epidemiológica — LaPaHV (v3)
+"""Motor de análise epidemiológica — Pirajá · Entero (v3)
 
 Alterações da v2 -> v3:
   7) Acrescentadas medidas de incerteza e testes de hipótese, que faltavam

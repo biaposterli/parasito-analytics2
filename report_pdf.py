@@ -1,10 +1,11 @@
 """
-Geração do relatório em PDF — LaPaHV
+Geração do relatório em PDF — Pirajá · Entero
 Usa reportlab (layout) + matplotlib (gráficos estáticos), ambas bibliotecas puras em Python,
 sem dependências de sistema — rodam sem problemas no Streamlit Community Cloud.
 """
 import io
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 
@@ -17,38 +18,71 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_LEFT
+from reportlab.lib.enums import TA_LEFT, TA_RIGHT
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, KeepTogether, HRFlowable,
 )
 
 # ---------------------------------------------------------------- paleta
-INK = colors.HexColor("#11483D")
-INK_SOFT = colors.HexColor("#3E5F55")
-TEAL = colors.HexColor("#328567")
-TEAL_DARK = colors.HexColor("#11483D")
-TEAL_TINT = colors.HexColor("#E2F0E7")
-BRICK = colors.HexColor("#9C4A2E")
-BRICK_TINT = colors.HexColor("#F1E2D8")
-AMBER = colors.HexColor("#5F8A4E")
-SAGE = colors.HexColor("#7DAE84")
-LINE = colors.HexColor("#DAE1D5")
-BG = colors.HexColor("#F5F0EA")
+# Identidade visual Pirajá — "Mata, barro e papel"
+INK = colors.HexColor("#1B2421")          # tinta
+INK_SOFT = colors.HexColor("#4E5B55")
+INK_FAINT = colors.HexColor("#7A857F")
+TEAL = colors.HexColor("#328567")         # verde-folha
+TEAL_DARK = colors.HexColor("#11483D")    # verde-mata
+TEAL_TINT = colors.HexColor("#E3EEE8")
+BRICK = colors.HexColor("#9C4A2F")        # cobre
+BRICK_TINT = colors.HexColor("#F3E4DB")
+SAGE = colors.HexColor("#A9C3B8")
+LINE = colors.HexColor("#DCD6C8")
+BG = colors.HexColor("#F4F1EA")           # papel
 
 MPL_TEAL = "#328567"
 MPL_TEAL_DARK = "#11483D"
-MPL_BRICK = "#9C4A2E"
-MPL_AMBER = "#5F8A4E"
-MPL_SAGE = "#7DAE84"
-MPL_LINE = "#DAE1D5"
+MPL_BRICK = "#9C4A2F"
+MPL_SAGE = "#A9C3B8"
+MPL_LINE = "#DCD6C8"
+MPL_CATEGORIA = {"Patogênico": MPL_BRICK, "Comensal": MPL_TEAL, "Não classificado": MPL_SAGE}
+
+# ---------------------------------------------------------------- fontes
+# Fraunces (títulos e números) e Instrument Sans (texto), ambas sob licença
+# SIL OFL, embutidas a partir de brand/fonts. Se os arquivos não estiverem
+# presentes, o relatório cai para Times/Helvetica sem quebrar.
+_FONT_DIR = Path(__file__).parent / "brand" / "fonts"
+FONT_TITLE = "Times-Bold"
+FONT_BODY = "Helvetica"
+FONT_BODY_BOLD = "Helvetica-Bold"
+_MPL_FAMILY = "sans-serif"
+try:
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    pdfmetrics.registerFont(TTFont("Fraunces-SemiBold", str(_FONT_DIR / "Fraunces-SemiBold.ttf")))
+    pdfmetrics.registerFont(TTFont("InstrumentSans", str(_FONT_DIR / "InstrumentSans-Regular.ttf")))
+    pdfmetrics.registerFont(TTFont("InstrumentSans-SemiBold", str(_FONT_DIR / "InstrumentSans-SemiBold.ttf")))
+    pdfmetrics.registerFontFamily(
+        "InstrumentSans", normal="InstrumentSans", bold="InstrumentSans-SemiBold",
+        italic="InstrumentSans", boldItalic="InstrumentSans-SemiBold",
+    )
+    FONT_TITLE = "Fraunces-SemiBold"
+    FONT_BODY = "InstrumentSans"
+    FONT_BODY_BOLD = "InstrumentSans-SemiBold"
+except Exception:  # noqa: BLE001
+    pass
+try:
+    for _f in ("InstrumentSans-Regular.ttf", "InstrumentSans-SemiBold.ttf"):
+        fm.fontManager.addfont(str(_FONT_DIR / _f))
+    _MPL_FAMILY = "Instrument Sans"
+except Exception:  # noqa: BLE001
+    pass
 
 plt.rcParams.update({
-    "font.family": "sans-serif",
+    "font.family": _MPL_FAMILY,
     "axes.edgecolor": MPL_LINE,
-    "axes.labelcolor": "#3E5F55",
-    "text.color": "#11483D",
-    "xtick.color": "#3E5F55",
-    "ytick.color": "#3E5F55",
+    "axes.labelcolor": "#4E5B55",
+    "text.color": "#1B2421",
+    "xtick.color": "#4E5B55",
+    "ytick.color": "#4E5B55",
     "axes.grid": True,
     "grid.color": MPL_LINE,
     "grid.linewidth": 0.6,
@@ -74,7 +108,7 @@ def _chart_especies(especies_df):
     if especies_df.empty:
         return None
     df = especies_df.sort_values("prevalencia")
-    colors_map = {"Patogênico": MPL_BRICK, "Comensal": MPL_AMBER, "Não classificado": MPL_SAGE}
+    colors_map = MPL_CATEGORIA
     bar_colors = [colors_map.get(c, MPL_SAGE) for c in df["categoria"]]
     fig, ax = plt.subplots(figsize=(6.2, max(1.6, 0.4 * len(df))))
     ax.barh(df["especie"], df["prevalencia"], color=bar_colors)
@@ -92,7 +126,7 @@ def _chart_todos_parasitos(todos_df):
     if todos_df.empty:
         return None
     df = todos_df.sort_values("prevalencia")
-    colors_map = {"Patogênico": MPL_BRICK, "Comensal": MPL_AMBER, "Não classificado": MPL_SAGE}
+    colors_map = MPL_CATEGORIA
 
     def _hatch_for(dominio):
         if dominio == "Fecal":
@@ -183,19 +217,19 @@ def _chart_cumulativa(cum_df):
 def _styles():
     ss = getSampleStyleSheet()
     styles = {
-        "title": ParagraphStyle("lp_title", parent=ss["Title"], fontName="Helvetica-Bold",
+        "title": ParagraphStyle("lp_title", parent=ss["Title"], fontName=FONT_TITLE,
                                  fontSize=20, textColor=TEAL_DARK, alignment=TA_LEFT, spaceAfter=2),
-        "eyebrow": ParagraphStyle("lp_eyebrow", parent=ss["Normal"], fontName="Helvetica-Bold",
-                                   fontSize=9, textColor=TEAL, spaceAfter=10, tracking=0.5),
-        "h2": ParagraphStyle("lp_h2", parent=ss["Heading2"], fontName="Helvetica-Bold",
+        "eyebrow": ParagraphStyle("lp_eyebrow", parent=ss["Normal"], fontName=FONT_BODY_BOLD,
+                                   fontSize=8.5, textColor=BRICK, spaceAfter=10, tracking=0.5),
+        "h2": ParagraphStyle("lp_h2", parent=ss["Heading2"], fontName=FONT_TITLE,
                               fontSize=13.5, textColor=TEAL_DARK, spaceBefore=16, spaceAfter=6),
-        "body": ParagraphStyle("lp_body", parent=ss["Normal"], fontName="Helvetica",
+        "body": ParagraphStyle("lp_body", parent=ss["Normal"], fontName=FONT_BODY,
                                 fontSize=9.5, textColor=INK_SOFT, leading=13.5),
-        "note": ParagraphStyle("lp_note", parent=ss["Normal"], fontName="Helvetica",
+        "note": ParagraphStyle("lp_note", parent=ss["Normal"], fontName=FONT_BODY,
                                 fontSize=9, textColor=INK_SOFT, leading=13, backColor=BRICK_TINT,
                                 borderPadding=8, leftIndent=4),
-        "small": ParagraphStyle("lp_small", parent=ss["Normal"], fontName="Helvetica",
-                                 fontSize=8, textColor=colors.HexColor("#7C8B81")),
+        "small": ParagraphStyle("lp_small", parent=ss["Normal"], fontName=FONT_BODY,
+                                 fontSize=8, textColor=INK_FAINT),
     }
     return styles
 
@@ -242,25 +276,25 @@ def _stat_table(metrics):
     ]
     # linhas de IC e de base viram Paragraph para quebrar linha dentro da
     # célula (textos de "Não avaliado" não cabem numa linha só)
-    ic_style = ParagraphStyle("lp_stat_ic", fontName="Helvetica", fontSize=8, leading=10, textColor=TEAL)
-    base_style = ParagraphStyle("lp_stat_base", fontName="Helvetica", fontSize=8, leading=10,
-                                textColor=colors.HexColor("#7C8B81"))
+    ic_style = ParagraphStyle("lp_stat_ic", fontName=FONT_BODY, fontSize=8, leading=10, textColor=TEAL)
+    base_style = ParagraphStyle("lp_stat_base", fontName=FONT_BODY, fontSize=8, leading=10,
+                                textColor=INK_FAINT)
     data[2] = [Paragraph(txt if n else "", ic_style) for txt, n in zip(data[2], (n_f, n_l, n_c))]
     data[3] = [Paragraph(txt, base_style) for txt in data[3]]
     t = Table(data, colWidths=[56 * mm, 56 * mm, 56 * mm])
     t.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTNAME", (0, 0), (-1, 0), FONT_BODY_BOLD),
         ("FONTSIZE", (0, 0), (-1, 0), 7.5),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#7C8B81")),
-        ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
+        ("TEXTCOLOR", (0, 0), (-1, 0), INK_FAINT),
+        ("FONTNAME", (0, 1), (-1, 1), FONT_TITLE),
         ("FONTSIZE", (0, 1), (-1, 1), 20),
         ("TEXTCOLOR", (0, 1), (-1, 1), TEAL_DARK),
-        ("FONTNAME", (0, 2), (-1, 2), "Helvetica"),
+        ("FONTNAME", (0, 2), (-1, 2), FONT_BODY),
         ("FONTSIZE", (0, 2), (-1, 2), 8),
         ("TEXTCOLOR", (0, 2), (-1, 2), TEAL),
-        ("FONTNAME", (0, 3), (-1, 3), "Helvetica"),
+        ("FONTNAME", (0, 3), (-1, 3), FONT_BODY),
         ("FONTSIZE", (0, 3), (-1, 3), 8),
-        ("TEXTCOLOR", (0, 3), (-1, 3), colors.HexColor("#7C8B81")),
+        ("TEXTCOLOR", (0, 3), (-1, 3), INK_FAINT),
         ("BOX", (0, 0), (0, -1), 0.7, LINE),
         ("BOX", (1, 0), (1, -1), 0.7, LINE),
         ("BOX", (2, 0), (2, -1), 0.7, LINE),
@@ -299,7 +333,7 @@ def _df_table(df, col_labels=None, col_widths=None, max_rows=None, font_size=8, 
                                 leading=font_size * 1.3, textColor=INK)
     header_style = ParagraphStyle("lp_cell_header", parent=styles["body"], fontSize=font_size,
                                    leading=font_size * 1.25,
-                                   fontName="Helvetica-Bold", textColor=colors.HexColor("#7C8B81"))
+                                   fontName=FONT_BODY_BOLD, textColor=INK_FAINT)
     if df.empty:
         return Paragraph("Sem dados.", styles["body"])
     if max_rows:
@@ -310,7 +344,7 @@ def _df_table(df, col_labels=None, col_widths=None, max_rows=None, font_size=8, 
     data = [header_row] + body_rows
     t = Table(data, colWidths=col_widths, repeatRows=1)
     t.setStyle(TableStyle([
-        ("LINEBELOW", (0, 0), (-1, 0), 0.9, colors.HexColor("#AFC6B4")),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.9, SAGE),
         ("LINEBELOW", (0, 1), (-1, -1), 0.4, LINE),
         ("TOPPADDING", (0, 0), (-1, -1), 4),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
@@ -347,7 +381,7 @@ def _chart_especies_titulo(especies_df, titulo):
     if especies_df.empty:
         return None
     df = especies_df.sort_values("prevalencia")
-    colors_map = {"Patogênico": MPL_BRICK, "Comensal": MPL_AMBER, "Não classificado": MPL_SAGE}
+    colors_map = MPL_CATEGORIA
     bar_colors = [colors_map.get(c, MPL_SAGE) for c in df["categoria"]]
     fig, ax = plt.subplots(figsize=(4.2, max(1.8, 0.42 * len(df) + 0.6)))
     ax.barh(df["especie"], df["prevalencia"], color=bar_colors)
@@ -420,7 +454,7 @@ def build_pdf_report(metrics: dict, logo_path: str | None = None) -> bytes:
     doc = SimpleDocTemplate(
         buf, pagesize=A4,
         topMargin=18 * mm, bottomMargin=16 * mm, leftMargin=18 * mm, rightMargin=18 * mm,
-        title="Relatório de Análise Epidemiológica — LaPaHV",
+        title="Relatório de Análise Epidemiológica — Pirajá",
     )
     story = []
 
@@ -430,28 +464,34 @@ def build_pdf_report(metrics: dict, logo_path: str | None = None) -> bytes:
         list(metrics["metodos_resumo"]["metodo"]) if not metrics["metodos_resumo"].empty else []
     )
 
-    # ---- cabeçalho ----
-    header_cells = []
+    # ---- cabeçalho: assinatura Pirajá · Entero + filete verde-mata ----
+    meta_style = ParagraphStyle("lp_meta", parent=styles["small"], alignment=TA_RIGHT, leading=10.5)
+    meta_block = [
+        Paragraph("Relatório de análise epidemiológica", meta_style),
+        Paragraph(f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}", meta_style),
+    ]
+    logo_cell = ""
     if logo_path:
         try:
-            header_cells.append(Image(logo_path, width=16 * mm, height=20 * mm))
-        except Exception:
-            header_cells.append("")
-    title_block = [
-        Paragraph("LABORATÓRIO DE PARASITOLOGIA HUMANA E VETERINÁRIA", styles["eyebrow"]),
-        Paragraph("Relatório de análise epidemiológica", styles["title"]),
-        Paragraph(f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}", styles["small"]),
-    ]
-    if header_cells:
-        t = Table([[header_cells[0], title_block]], colWidths=[20 * mm, 150 * mm])
-        t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (1, 0), (1, 0), 8)]))
-        story.append(t)
-    else:
-        story.extend(title_block)
-
-    story.append(Spacer(1, 4 * mm))
-    story.append(HRFlowable(width="100%", thickness=0.8, color=LINE))
-    story.append(Spacer(1, 4 * mm))
+            # proporção da assinatura horizontal com módulo (1688 x 648 px)
+            logo_cell = Image(logo_path, width=44 * mm, height=44 * mm * 648 / 1688)
+        except Exception:  # noqa: BLE001
+            logo_cell = ""
+    if logo_cell == "":
+        logo_cell = Paragraph("Pirajá", styles["title"])
+    t = Table([[logo_cell, meta_block]], colWidths=[90 * mm, 84 * mm])
+    t.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+        ("ALIGN", (0, 0), (0, 0), "LEFT"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 3 * mm))
+    story.append(HRFlowable(width="100%", thickness=1.4, color=TEAL_DARK))
+    story.append(Spacer(1, 5 * mm))
+    story.append(Paragraph("Relatório de análise epidemiológica", styles["title"]))
+    story.append(Spacer(1, 3 * mm))
 
     story.append(Paragraph(
         f"{metrics['total']} pacientes cadastrados &middot; {len(metrics['fecal'])} com amostra fecal "

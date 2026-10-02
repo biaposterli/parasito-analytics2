@@ -1,6 +1,7 @@
 """
-LaPaHV — Laboratório de Parasitologia Humana e Veterinária
-Análise epidemiológica de levantamentos de parasitoses intestinais.
+Pirajá · Entero
+Plataforma de análise epidemiológica de exames parasitológicos —
+módulo de parasitos intestinais (exames de fezes e lâmina/fita adesiva).
 
 Rodar localmente:
     pip install -r requirements.txt
@@ -44,28 +45,50 @@ from analysis_config import (
 from report_pdf import build_pdf_report
 
 APP_DIR = Path(__file__).parent
-LOGO_PATH = APP_DIR / "logo.png"
 
 # ----------------------------------------------------------------
-# Paleta extraída da logo do LaPaHV
+# Identidade visual Pirajá — paleta "Mata, barro e papel"
 # ----------------------------------------------------------------
-BG = "#F5F0EA"
-SURFACE = "#FFFFFF"
-INK = "#11483D"
-INK_SOFT = "#3E5F55"
-INK_FAINT = "#7C8B81"
-TEAL = "#328567"
-TEAL_DARK = "#11483D"
-TEAL_TINT = "#E2F0E7"
-BRICK = "#9C4A2E"
-BRICK_TINT = "#F1E2D8"
-AMBER = "#5F8A4E"
-SAGE = "#7DAE84"
-LINE = "#DAE1D5"
+BRAND_DIR = APP_DIR / "brand"
+LOGO_PDF_PATH = BRAND_DIR / "piraja-entero-cor.png"        # cabeçalho do PDF
+FAVICON_PATH = BRAND_DIR / "piraja-favicon.png"             # ícone da aba do navegador
+LOGO_SIDEBAR_SVG = BRAND_DIR / "piraja-entero-negativo.svg" # sidebar (fundo verde-mata)
+
+MATA = "#11483D"          # verde-mata — principal
+FOLHA = "#328567"         # verde-folha — secundária
+COBRE = "#9C4A2F"         # cobre — acento do módulo Entero
+COBRE_CLARO = "#D08A6A"   # cobre claro — acento sobre fundo escuro
+PAPEL = "#F4F1EA"         # papel — fundos
+TINTA = "#1B2421"         # tinta — texto corrido
+
+BG = PAPEL
+SURFACE = "#FBF9F4"
+INK = TINTA
+INK_SOFT = "#4E5B55"
+INK_FAINT = "#7A857F"
+TEAL = FOLHA
+TEAL_DARK = MATA
+TEAL_TINT = "#E3EEE8"
+BRICK = COBRE
+BRICK_TINT = "#F3E4DB"
+SAGE = "#A9C3B8"          # neutro esverdeado (categorias sem classificação)
+LINE = "#DCD6C8"
+MATA_DOT = "#1F6150"      # pontos do padrão "Campo" sobre verde-mata
+
+
+def _svg_data_uri(path):
+    import base64
+    try:
+        return "data:image/svg+xml;base64," + base64.b64encode(Path(path).read_bytes()).decode()
+    except OSError:
+        return ""
+
+
+LOGO_SIDEBAR_URI = _svg_data_uri(LOGO_SIDEBAR_SVG)
 
 st.set_page_config(
-    page_title="LaPaHV — Análise de Parasitoses",
-    page_icon=str(LOGO_PATH) if LOGO_PATH.exists() else "🔬",
+    page_title="Pirajá · Painel de análise epidemiológica",
+    page_icon=str(FAVICON_PATH) if FAVICON_PATH.exists() else "🔬",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -76,10 +99,10 @@ st.set_page_config(
 st.markdown(
     f"""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Instrument+Sans:wght@400;500;600;700&display=swap');
 
     html, body, [class*="css"]  {{
-        font-family: 'Inter', sans-serif;
+        font-family: 'Instrument Sans', sans-serif;
         color: {INK};
     }}
     .stApp {{
@@ -96,15 +119,8 @@ st.markdown(
        pode ser sobrescrita por um texto claro, enquanto os fundos abaixo
        continuam claros (fixados manualmente) — resultando em texto invisível.
 
-       IMPORTANTE: st.markdown('<div class="lapahv-step-wrap">', ...) e o
-       st.write(...) / st.markdown('</div>', ...) que vêm depois são chamadas
-       SEPARADAS — cada uma gera seu próprio bloco no DOM, como elementos
-       IRMÃOS, não um dentro do outro. A div de marca não chega a "abraçar" de
-       fato o texto entre a abertura e o fechamento, então seletores do tipo
-       ".lapahv-step-wrap p" NÃO alcançam esse texto. Por isso as regras
-       abaixo miram diretamente os contêineres que o Streamlit usa para
-       QUALQUER texto (st.write, st.markdown, st.caption), não os nossos
-       contêineres de marca — funciona não importa como o HTML foi quebrado. */
+       Por isso as regras abaixo miram diretamente os contêineres que o
+       Streamlit usa para QUALQUER texto (st.write, st.markdown, st.caption). */
     [data-testid="stMarkdownContainer"],
     [data-testid="stMarkdownContainer"] p,
     [data-testid="stMarkdownContainer"] li,
@@ -119,9 +135,11 @@ st.markdown(
     [data-testid="stText"] {{
         color: {INK_SOFT} !important;
     }}
-    /* títulos de marca (h2/h3 dentro de st.markdown com HTML de vários níveis
-       já têm cor própria acima; aqui garantimos que headings simples também
-       fiquem legíveis, sem depender do nível de aninhamento) */
+    [data-testid="stMarkdownContainer"], [data-testid="stCaptionContainer"], [data-testid="stText"],
+    [data-testid="stWidgetLabel"], [data-testid="stFileUploader"], [data-testid="stDataFrame"],
+    [data-testid="stAlert"], [data-testid="stExpander"] summary {{
+        font-family: 'Instrument Sans', sans-serif;
+    }}
     [data-testid="stMarkdownContainer"] h1,
     [data-testid="stMarkdownContainer"] h2,
     [data-testid="stMarkdownContainer"] h3,
@@ -130,95 +148,107 @@ st.markdown(
     }}
     /* elementos de marca com cor própria (sobrescrevem a regra genérica acima
        por especificidade/ordem — mantidos explicitamente) */
-    .lapahv-hero p, .lapahv-card p, .lapahv-note {{
+    .pj-card p, .pj-note {{
         color: {INK_SOFT} !important;
     }}
-    .lapahv-topbar .name, .lapahv-section-title, .lapahv-section-subtitle,
-    .lapahv-step .step-title {{
+    .pj-topbar .name, .pj-section-title, .pj-section-subtitle,
+    .pj-step .step-title {{
         color: {TEAL_DARK} !important;
     }}
-    .lapahv-section-caption, .lapahv-topbar .sub, .lapahv-card .kicker {{
+    .pj-section-caption, .pj-topbar .sub, .pj-card .kicker {{
         color: {INK_FAINT} !important;
     }}
-    .lapahv-eyebrow {{
-        color: {TEAL} !important;
-    }}
     /* ----- eyebrow / section labels ----- */
-    .lapahv-eyebrow {{
-        font-family: 'IBM Plex Mono', monospace;
-        font-size: 12.5px;
-        letter-spacing: .06em;
+    .pj-eyebrow {{
+        font-family: 'Instrument Sans', sans-serif;
+        font-weight: 600;
+        font-size: 12px;
+        letter-spacing: .14em;
         text-transform: uppercase;
-        color: {TEAL} !important;
+        color: {BRICK} !important;
     }}
-    .lapahv-eyebrow.on-dark {{ color: {SAGE} !important; }}
 
     /* ----- top brand bar ----- */
-    .lapahv-topbar {{
-        display:flex; align-items:center; gap:14px;
-        padding: 4px 0 18px 0;
+    .pj-topbar {{
+        display:flex; align-items:baseline; justify-content:space-between; gap:14px;
+        padding: 4px 0 16px 0;
         border-bottom: 1px solid {LINE};
         margin-bottom: 22px;
     }}
-    .lapahv-topbar .name {{
-        font-family:'Fraunces', serif; font-weight:600; font-size: 19px; color:{TEAL_DARK};
+    .pj-topbar .name {{
+        font-family:'Fraunces', serif; font-weight:600; font-size: 22px; color:{TEAL_DARK};
         line-height:1.15;
     }}
-    .lapahv-topbar .sub {{
-        font-family:'IBM Plex Mono', monospace; font-size:11px; letter-spacing:.04em;
-        color:{INK_FAINT}; text-transform:uppercase;
+    .pj-topbar .sub {{
+        font-family:'Instrument Sans', sans-serif; font-weight:600; font-size:11.5px;
+        letter-spacing:.14em; color:{INK_FAINT}; text-transform:uppercase;
     }}
 
-    /* ----- hero ----- */
-    .lapahv-hero {{
-        background: {SURFACE};
-        border: 1px solid {LINE};
-        border-radius: 4px;
-        padding: 30px 34px;
+    /* ----- hero (verde-mata + padrão "Campo") ----- */
+    .pj-hero {{
+        position: relative; overflow: hidden;
+        background: {MATA};
+        border-radius: 14px;
+        padding: 36px 40px;
         margin-bottom: 22px;
     }}
-    .lapahv-hero h2 {{
-        margin: 4px 0 10px 0 !important;
-        font-size: 30px !important;
+    .pj-hero::before {{
+        content: ""; position: absolute; inset: 0; pointer-events: none;
+        background-image: radial-gradient(circle, {MATA_DOT} 3.2px, transparent 3.8px);
+        background-size: 26px 26px;
+        background-position: 13px 13px;
+        -webkit-mask-image: linear-gradient(to left, #000 15%, transparent 70%);
+                mask-image: linear-gradient(to left, #000 15%, transparent 70%);
     }}
-    .lapahv-hero p {{
-        color: {INK_SOFT}; font-size: 15px; max-width: 720px; margin-bottom: 0;
+    .pj-hero .pj-hero-cluster {{
+        position: absolute; right: 34px; top: 26px; width: 120px; height: 90px; pointer-events: none;
+    }}
+    .pj-hero > *:not(.pj-hero-cluster) {{ position: relative; }}
+    [data-testid="stMarkdownContainer"] .pj-hero .pj-eyebrow {{ color: {COBRE_CLARO} !important; }}
+    [data-testid="stMarkdownContainer"] .pj-hero h2 * {{ color: {PAPEL} !important; }}
+    [data-testid="stMarkdownContainer"] .pj-hero h2 {{
+        color: {PAPEL} !important;
+        margin: 6px 0 12px 0 !important;
+        font-size: 32px !important; font-weight: 500 !important; line-height: 1.15 !important;
+        max-width: 760px;
+    }}
+    [data-testid="stMarkdownContainer"] .pj-hero p {{
+        color: rgba(244, 241, 234, .82) !important;
+        font-size: 15.5px; max-width: 720px; margin-bottom: 0; line-height: 1.6;
     }}
 
     /* ----- generic section card ----- */
-    .lapahv-card {{
+    .pj-card {{
         background: {SURFACE};
         border: 1px solid {LINE};
-        border-radius: 4px;
+        border-radius: 14px;
         padding: 18px 20px;
         height: 100%;
     }}
-    .lapahv-card .kicker {{
-        font-family:'IBM Plex Mono', monospace; font-size: 11.5px; letter-spacing:.05em;
-        text-transform:uppercase; color:{INK_FAINT} !important; margin-bottom: 8px; display:block;
+    .pj-card .kicker {{
+        font-family:'Instrument Sans', sans-serif; font-weight:600; font-size: 11.5px; letter-spacing:.12em;
+        text-transform:uppercase; color:{INK_FAINT} !important; margin-bottom: 10px; display:block;
     }}
 
     /* ----- step header (numbered badge + title) ----- */
-    .lapahv-step {{
+    .pj-step {{
         display:flex; align-items:center; gap:12px; margin: 6px 0 2px 0;
     }}
-    .lapahv-step .badge {{
+    .pj-step .badge {{
         flex: 0 0 auto;
         width: 34px; height: 34px; border-radius: 50%;
-        background: {TEAL_DARK}; color: white !important;
-        font-family:'IBM Plex Mono', monospace; font-weight:600; font-size: 14px;
+        background: {TEAL_DARK}; color: {PAPEL} !important;
+        font-family:'Fraunces', serif; font-weight:600; font-size: 16px;
         display:flex; align-items:center; justify-content:center;
     }}
-    .lapahv-step .step-title {{
-        font-family:'Fraunces', serif; font-weight:600; color:{TEAL_DARK}; font-size: 21px;
+    .pj-step .step-title {{
+        font-family:'Fraunces', serif; font-weight:600; color:{TEAL_DARK}; font-size: 22px;
     }}
-    /* Cartão de cada passo. Antes era uma <div class="lapahv-step-wrap"> aberta
-       e fechada em st.markdown separados — como são blocos IRMÃOS no DOM, a div
-       não envolvia nada e aparecia como uma caixa branca vazia. Agora cada passo
-       é um st.container(key="lapahv-step-N"), que o Streamlit marca com a
-       classe st-key-lapahv-step-N; o estilo mira essa classe. */
-    div[class*="st-key-lapahv-step"] {{
-        background:{SURFACE}; border:1px solid {LINE}; border-radius:4px;
+    /* Cartão de cada passo: cada passo é um st.container(key="pj-step-N"), que
+       o Streamlit marca com a classe st-key-pj-step-N; o estilo mira essa classe
+       (uma <div> aberta e fechada em st.markdown separados não envolveria nada). */
+    div[class*="st-key-pj-step"] {{
+        background:{SURFACE}; border:1px solid {LINE}; border-radius:14px;
         padding: 22px 24px 24px 24px; margin-bottom: 18px;
     }}
 
@@ -227,16 +257,19 @@ st.markdown(
         background: {SURFACE};
         border: 1px solid {LINE};
         padding: 16px 18px;
-        border-radius: 4px;
+        border-radius: 12px;
     }}
     div[data-testid="stMetric"] label {{
-        font-family: 'IBM Plex Mono', monospace !important;
+        font-family: 'Instrument Sans', sans-serif !important;
+        font-weight: 600;
         text-transform: uppercase;
         font-size: 11px !important;
-        letter-spacing: .04em;
+        letter-spacing: .1em;
         color: {INK_FAINT} !important;
     }}
     div[data-testid="stMetric"] div[data-testid="stMetricValue"] {{
+        font-family: 'Fraunces', serif !important;
+        font-weight: 600;
         color: {TEAL_DARK} !important;
     }}
 
@@ -248,11 +281,12 @@ st.markdown(
        abaixo miram o texto e o ícone do botão diretamente, com prioridade máxima. */
     .stDownloadButton button, .stButton button, .stFormSubmitButton button {{
         background-color: {TEAL_DARK};
-        color: white !important;
+        color: {PAPEL} !important;
         border: 1px solid {TEAL_DARK};
-        font-family: 'IBM Plex Mono', monospace;
-        border-radius: 3px;
-        font-size: 13px;
+        font-family: 'Instrument Sans', sans-serif;
+        font-weight: 600;
+        border-radius: 8px;
+        font-size: 13.5px;
     }}
     .stFormSubmitButton button p, .stFormSubmitButton button span,
     .stDownloadButton button p, .stButton button p,
@@ -262,114 +296,146 @@ st.markdown(
     .stDownloadButton button [data-testid="stMarkdownContainer"] p,
     .stButton button [data-testid="stMarkdownContainer"],
     .stButton button [data-testid="stMarkdownContainer"] p {{
-        color: white !important;
+        color: {PAPEL} !important;
     }}
     .stDownloadButton button svg, .stButton button svg {{
-        fill: white !important;
-        color: white !important;
+        fill: {PAPEL} !important;
+        color: {PAPEL} !important;
     }}
     .stDownloadButton button:hover, .stButton button:hover, .stFormSubmitButton button:hover {{
         background-color: {TEAL};
         border-color: {TEAL};
-        color: white !important;
+        color: {PAPEL} !important;
     }}
+    .stFormSubmitButton button:hover p, .stFormSubmitButton button:hover span,
     .stDownloadButton button:hover p, .stButton button:hover p,
     .stDownloadButton button:hover span, .stButton button:hover span,
     .stDownloadButton button:hover [data-testid="stMarkdownContainer"] p,
     .stButton button:hover [data-testid="stMarkdownContainer"] p {{
-        color: white !important;
+        color: {PAPEL} !important;
     }}
 
     /* ----- tags ----- */
-    .lapahv-tag {{
-        display:inline-block; font-family:'IBM Plex Mono', monospace; font-size:12px;
-        padding:3px 9px; margin:2px; border-radius:3px; border:1px solid;
+    .pj-tag {{
+        display:inline-block; font-family:'Instrument Sans', sans-serif; font-weight:500; font-size:12.5px;
+        padding:3px 11px; margin:2px; border-radius:999px; border:1px solid;
     }}
 
     /* ----- notes ----- */
-    .lapahv-note {{
+    .pj-note {{
         background: {BRICK_TINT}; border-left: 3px solid {BRICK};
-        padding: 12px 16px; font-size: 14px; color: {INK_SOFT} !important; border-radius: 3px;
+        padding: 12px 16px; font-size: 14px; color: {INK_SOFT} !important; border-radius: 6px;
     }}
 
     /* ----- section title inside report ----- */
-    .lapahv-section-title {{
+    .pj-section-title {{
         font-family:'Fraunces', serif; font-weight:600; color:{TEAL_DARK};
-        font-size: 19px; margin: 2px 0 2px 0;
+        font-size: 20px; margin: 2px 0 2px 0;
     }}
-    .lapahv-section-subtitle {{
+    .pj-section-subtitle {{
         font-family:'Fraunces', serif; font-weight:600; color:{TEAL_DARK};
-        font-size: 15.5px; margin: 2px 0 2px 0;
+        font-size: 16px; margin: 2px 0 2px 0;
     }}
-    .lapahv-section-caption {{
+    .pj-section-caption {{
         color:{INK_FAINT} !important; font-size: 12.5px; margin-bottom: 10px;
     }}
 
     /* ----- tabs (sectorized report) ----- */
-    .stTabs [data-baseweb="tab-list"] {{
+    .stTabs [data-baseweb="tab-list"], .stTabs [role="tablist"] {{
         gap: 4px;
         border-bottom: 1px solid {LINE};
     }}
-    .stTabs [data-baseweb="tab"] {{
-        font-family: 'IBM Plex Mono', monospace;
-        font-size: 13px;
-        text-transform: uppercase;
-        letter-spacing: .03em;
+    .stTabs [data-baseweb="tab"], .stTabs [role="tab"] {{
+        font-family: 'Instrument Sans', sans-serif;
+        font-weight: 600;
+        font-size: 14px;
         color: {INK_FAINT} !important;
-        padding: 10px 16px;
+        padding: 10px 14px;
     }}
+    .stTabs [role="tab"] p {{ font-family: 'Instrument Sans', sans-serif; font-weight: 600; }}
     .stTabs [aria-selected="true"] {{
         color: {TEAL_DARK} !important;
-        border-bottom: 2px solid {TEAL_DARK} !important;
-        font-weight: 600;
+        border-bottom: 2px solid {BRICK} !important;
     }}
-
-    /* ----- status pill (sidebar) ----- */
-    .lapahv-pill {{
-        display:inline-flex; align-items:center; gap:6px;
-        font-family:'IBM Plex Mono', monospace; font-size: 11.5px;
-        padding: 5px 10px; border-radius: 20px; border: 1px solid {LINE};
-        color: {INK_SOFT} !important; background: {SURFACE};
-    }}
-    .lapahv-pill .dot {{
-        width:7px; height:7px; border-radius:50%; background:{TEAL};
-    }}
+    .stTabs [data-baseweb="tab-highlight"] {{ background-color: {BRICK} !important; }}
 
     hr {{ border-color: {LINE}; }}
+
+    /* ----- sidebar (verde-mata, assinatura em negativo) ----- */
     section[data-testid="stSidebar"] {{
-        background-color: {SURFACE};
-        border-right: 1px solid {LINE};
+        background-color: {MATA};
+        border-right: none;
     }}
+    section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"],
+    section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
+    section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] li,
+    section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] span,
+    section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] em,
+    section[data-testid="stSidebar"] [data-testid="stCaptionContainer"],
+    section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {{
+        color: rgba(244, 241, 234, .78) !important;
+    }}
+    section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] strong,
+    section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] strong {{
+        color: {PAPEL} !important;
+    }}
+    section[data-testid="stSidebar"] .pj-eyebrow {{ color: {COBRE_CLARO} !important; }}
+    section[data-testid="stSidebar"] hr {{ border-color: rgba(244, 241, 234, .16) !important; }}
+    section[data-testid="stSidebar"] [data-testid="stSidebarCollapseButton"] *,
+    section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] button * {{
+        color: {PAPEL} !important; fill: {PAPEL} !important;
+    }}
+    section[data-testid="stSidebar"] .stDownloadButton button {{
+        background-color: {PAPEL}; border-color: {PAPEL};
+    }}
+    section[data-testid="stSidebar"] .stDownloadButton button p,
+    section[data-testid="stSidebar"] .stDownloadButton button span,
+    section[data-testid="stSidebar"] .stDownloadButton button div,
+    section[data-testid="stSidebar"] .stDownloadButton button [data-testid="stMarkdownContainer"] p {{
+        color: {MATA} !important;
+    }}
+    section[data-testid="stSidebar"] .stDownloadButton button:hover {{
+        background-color: {COBRE_CLARO}; border-color: {COBRE_CLARO};
+    }}
+    section[data-testid="stSidebar"] .stDownloadButton button:hover p {{
+        color: {TINTA} !important;
+    }}
+    .pj-sidebar-brand {{ padding: 2px 0 6px 0; }}
+    .pj-sidebar-brand img {{ width: 172px; height: auto; display: block; }}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-CHART_COLORWAY = [TEAL, BRICK, AMBER, SAGE, TEAL_DARK, "#84978D"]
+CHART_COLORWAY = [TEAL_DARK, TEAL, BRICK, COBRE_CLARO, SAGE, INK_FAINT]
+# Cores por categoria clínica: patogênico em cobre (o "positivo" da marca),
+# comensal em verde-folha, não classificado em neutro esverdeado.
+CAT_COLORS = CATEGORIA_CORES = {"Patogênico": BRICK, "Comensal": TEAL, "Não classificado": SAGE}
 PLOTLY_LAYOUT = dict(
-    font_family="Inter, sans-serif",
-    plot_bgcolor="white",
-    paper_bgcolor="white",
+    font_family="Instrument Sans, sans-serif",
+    font_color=INK_SOFT,
+    plot_bgcolor=SURFACE,
+    paper_bgcolor=SURFACE,
     colorway=CHART_COLORWAY,
     margin=dict(t=20, b=20, l=10, r=10),
 )
 
 
 def section_title(text, caption=None):
-    st.markdown(f'<div class="lapahv-section-title">{text}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="pj-section-title">{text}</div>', unsafe_allow_html=True)
     if caption:
-        st.markdown(f'<div class="lapahv-section-caption">{caption}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="pj-section-caption">{caption}</div>', unsafe_allow_html=True)
 
 
 def subsection_title(text, caption=None):
-    st.markdown(f'<div class="lapahv-section-subtitle">{text}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="pj-section-subtitle">{text}</div>', unsafe_allow_html=True)
     if caption:
-        st.markdown(f'<div class="lapahv-section-caption">{caption}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="pj-section-caption">{caption}</div>', unsafe_allow_html=True)
 
 
 def step_header(number, title):
     st.markdown(
-        f"""<div class="lapahv-step">
+        f"""<div class="pj-step">
         <div class="badge">{number}</div>
         <div class="step-title">{title}</div>
         </div>""",
@@ -416,7 +482,6 @@ def with_ic_column(df: pd.DataFrame, prev_col="prevalencia", inf_col="ic95_inf",
     return out
 
 
-CAT_COLORS = {"Patogênico": BRICK, "Comensal": AMBER, "Não classificado": SAGE}
 
 
 def grafico_especies(esp_df: pd.DataFrame, somente_patogenicos: bool, vazio_msg: str, key: str):
@@ -502,7 +567,7 @@ def passo_configuracao(df: pd.DataFrame, file_bytes: bytes, file_name: str, cfg_
         ss["cfg_ver"] = ss.get("cfg_ver", 0) + 1
     ver = ss["cfg_ver"]
 
-    with st.container(key="lapahv-step-3"):
+    with st.container(key="pj-step-3"):
         step_header(3, "Configure a análise")
         if ss["cfg_origem"]:
             partes = {"parasitos": "parasitos", "metodos": "métodos", "n_amostras": "nº de amostras"}
@@ -521,7 +586,7 @@ def passo_configuracao(df: pd.DataFrame, file_bytes: bytes, file_name: str, cfg_
         for a in ss.get("cfg_avisos", []):
             st.warning(a)
 
-        with st.form(f"lapahv-cfg-{ver}", border=False):
+        with st.form(f"pj-cfg-{ver}", border=False):
             t_par, t_met, t_amo = st.tabs(["🦠  Parasitos", "🔬  Métodos", "🧪  Amostras"])
             with t_par:
                 st.caption(
@@ -752,7 +817,7 @@ def generate_template_bytes() -> bytes:
 
     aviso = pd.DataFrame(
         [[
-            "Este modelo traz uma coluna para cada método que o LaPaHV reconhece. Se o seu "
+            "Este modelo traz uma coluna para cada método que o Pirajá reconhece. Se o seu "
             "laboratório não usa algum deles, pode simplesmente APAGAR a coluna inteira antes de "
             "enviar — o sistema detecta sozinho quais métodos estão presentes na planilha e ajusta "
             "as análises (denominadores, gráficos e tabelas) de acordo. Não é preciso preencher "
@@ -795,21 +860,16 @@ TEMPLATE_BYTES = generate_template_bytes()
 # SIDEBAR — marca, fluxo de trabalho e status
 # ==================================================================
 with st.sidebar:
-    col_l, col_t = st.columns([1, 3])
-    with col_l:
-        if LOGO_PATH.exists():
-            st.image(str(LOGO_PATH), width=48)
-    with col_t:
+    if LOGO_SIDEBAR_URI:
         st.markdown(
-            """<div style="line-height:1.2;">
-            <div style="font-family:'Fraunces',serif; font-weight:600; font-size:16px; color:#11483D;">LaPaHV</div>
-            <div style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#7C8B81; letter-spacing:.03em;">ANÁLISE DE PARASITOSES</div>
-            </div>""",
+            f'<div class="pj-sidebar-brand"><img src="{LOGO_SIDEBAR_URI}" alt="Pirajá Entero"></div>',
             unsafe_allow_html=True,
         )
+    else:
+        st.markdown("### Pirajá")
 
     st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown('<span class="lapahv-eyebrow">Fluxo de trabalho</span>', unsafe_allow_html=True)
+    st.markdown('<span class="pj-eyebrow">Fluxo de trabalho</span>', unsafe_allow_html=True)
     st.markdown(
         """
 - **01 · Baixe** o modelo de planilha
@@ -829,7 +889,7 @@ with st.sidebar:
     )
 
     st.divider()
-    st.markdown('<span class="lapahv-eyebrow">Sobre as amostras</span>', unsafe_allow_html=True)
+    st.markdown('<span class="pj-eyebrow">Sobre as amostras</span>', unsafe_allow_html=True)
     st.caption(
         "Alguns dos métodos aceitos, por tipo de amostra:\n\n"
         "**Pote de fezes** → HPJ, Willis, Baermann-Picanço, Faust, Kato-Katz, MIFC, Ritchie, "
@@ -841,7 +901,7 @@ with st.sidebar:
     )
 
     st.divider()
-    st.markdown('<span class="lapahv-eyebrow">Classificação clínica</span>', unsafe_allow_html=True)
+    st.markdown('<span class="pj-eyebrow">Classificação clínica</span>', unsafe_allow_html=True)
     st.caption(
         "Você define no passo 03 se cada parasito é **patogênico** ou **comensal**. O sistema "
         "sugere uma classificação padrão — por exemplo, *Entamoeba histolytica/dispar* vem como "
@@ -853,20 +913,34 @@ with st.sidebar:
 # TOPO — marca + título
 # ==================================================================
 st.markdown(
-    f"""<div class="lapahv-topbar">
+    f"""<div class="pj-topbar">
         <div>
-            <div class="name">Laboratório de Parasitologia Humana e Veterinária</div>
-            <div class="sub">Painel de análise epidemiológica</div>
+            <div class="name">Painel de análise epidemiológica</div>
+        </div>
+        <div>
+            <div class="sub">Pirajá · Entero · parasitos intestinais</div>
         </div>
     </div>""",
     unsafe_allow_html=True,
+)
+
+# Pequeno aglomerado de "positivos" em cobre claro sobre o padrão de pontos
+# do hero — o mesmo gesto do padrão "Campo" da identidade visual.
+HERO_CLUSTER_SVG = (
+    '<svg class="pj-hero-cluster" viewBox="0 0 120 90" xmlns="http://www.w3.org/2000/svg">'
+    + "".join(
+        f'<circle cx="{x}" cy="{y}" r="6" fill="{COBRE_CLARO}"/>'
+        for x, y in [(39, 13), (65, 13), (91, 13), (52, 39), (78, 39), (65, 65), (104, 65)]
+    )
+    + "</svg>"
 )
 
 # ==================================================================
 # HERO
 # ==================================================================
 st.markdown(
-    """<div class="lapahv-hero">
+    f"""<div class="pj-hero">
+    {HERO_CLUSTER_SVG}
     <h2>Seus dados de coleta, transformados em relatório epidemiológico.</h2>
     <p>Baixe o modelo de planilha e registre uma linha por coleta de cada paciente (P1, P2, P3…),
     com o resultado de cada método. Ao enviar a planilha, você escolhe quais parasitos entram na
@@ -884,7 +958,7 @@ st.markdown(
 # ==================================================================
 # PASSO 01 — Baixar modelo
 # ==================================================================
-with st.container(key="lapahv-step-1"):
+with st.container(key="pj-step-1"):
     step_header(1, "Baixe o modelo de planilha")
     st.write(
         "Um arquivo .xlsx com as colunas certas, os valores aceitos em cada uma, a lista de "
@@ -904,7 +978,7 @@ st.write("")
 # ==================================================================
 # PASSO 02 — Enviar planilha
 # ==================================================================
-with st.container(key="lapahv-step-2"):
+with st.container(key="pj-step-2"):
     step_header(2, "Envie a planilha preenchida")
     st.write(
         "Aceita o modelo baixado acima, preenchido com uma linha por coleta (P1, P2, P3...) de cada "
@@ -986,7 +1060,7 @@ if uploaded_file is not None:
                     "fora da curva cumulativa."
                 )
 
-            with st.container(key="lapahv-step-4"):
+            with st.container(key="pj-step-4"):
                 step_header(4, "Relatório da análise")
                 st.caption(
                     f"{metrics['total']} pacientes cadastrados · {len(metrics['fecal'])} com amostra "
@@ -1064,7 +1138,7 @@ if uploaded_file is not None:
 
                     if n_inconclusivas > 0:
                         st.markdown(
-                            f"""<div class="lapahv-note"><strong>Amostras inconclusivas:</strong>
+                            f"""<div class="pj-note"><strong>Amostras inconclusivas:</strong>
                             {len(metrics['fecal_inconclusivo'])} paciente(s) entregaram pote de fezes mas
                             tiveram <em>todos</em> os métodos fecais marcados como "Amostra insuficiente"
                             (ou sem resultado registrado){', ' + str(len(metrics['lamina_inconclusivo'])) + ' paciente(s) com lâmina entregue na mesma situação' if len(metrics['lamina_inconclusivo']) else ''}.
@@ -1077,7 +1151,7 @@ if uploaded_file is not None:
 
                     if len(metrics["apenas_lamina"]) > 0:
                         st.markdown(
-                            f"""<div class="lapahv-note" style="margin-top:8px;"><strong>Atenção:</strong> {len(metrics['apenas_lamina'])}
+                            f"""<div class="pj-note" style="margin-top:8px;"><strong>Atenção:</strong> {len(metrics['apenas_lamina'])}
                             paciente(s) só entregaram a lâmina, nunca o pote de fezes — para eles, apenas
                             o(s) método(s) de lâmina desta planilha pôde(puderam) ser pesquisado(s). Esses
                             resultados já estão somados na "Prevalência — lâmina (todos os pacientes)"
@@ -1192,7 +1266,7 @@ if uploaded_file is not None:
                                     metrics["todos_parasitos_resumo"].sort_values("prevalencia"),
                                     x="prevalencia", y="especie", orientation="h",
                                     color="categoria",
-                                    color_discrete_map={"Patogênico": BRICK, "Comensal": AMBER, "Não classificado": SAGE},
+                                    color_discrete_map=CATEGORIA_CORES,
                                     pattern_shape="dominio",
                                     labels={"prevalencia": "Prevalência (%)", "especie": "", "dominio": "Amostra"},
                                     hover_data={"metodos": True, "base_n": True, "n": True},
@@ -1471,7 +1545,7 @@ if uploaded_file is not None:
                     with col_dl2:
                         st.download_button(
                             "⬇ Baixar relatório em PDF",
-                            data=build_pdf_report(metrics, logo_path=str(LOGO_PATH) if LOGO_PATH.exists() else None),
+                            data=build_pdf_report(metrics, logo_path=str(LOGO_PDF_PATH) if LOGO_PDF_PATH.exists() else None),
                             file_name="Relatorio_Analise_Epidemiologica.pdf",
                             mime="application/pdf",
                             width="stretch",
