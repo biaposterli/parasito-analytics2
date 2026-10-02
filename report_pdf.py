@@ -5,6 +5,7 @@ sem dependências de sistema — rodam sem problemas no Streamlit Community Clou
 """
 import io
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import pandas as pd
@@ -84,6 +85,7 @@ plt.rcParams.update({
     "xtick.color": "#4E5B55",
     "ytick.color": "#4E5B55",
     "axes.grid": True,
+    "axes.axisbelow": True,   # linhas de grade atrás das barras, não por cima
     "grid.color": MPL_LINE,
     "grid.linewidth": 0.6,
     "figure.facecolor": "white",
@@ -448,7 +450,25 @@ def _secoes_por_dominio(story, styles, metrics):
     )
 
 
-def build_pdf_report(metrics: dict, logo_path: str | None = None) -> bytes:
+# Fuso usado quando o navegador não informa o fuso de quem gerou o relatório.
+FUSO_PADRAO = "America/Sao_Paulo"
+
+
+def _agora(fuso: str | None):
+    """Data/hora atual no fuso de quem está usando o site (informado pelo
+    navegador). O servidor do Streamlit Cloud roda em UTC, então sem isso o
+    horário impresso no relatório ficaria adiantado (3 h, no caso do Brasil)."""
+    for nome in (fuso, FUSO_PADRAO):
+        if not nome:
+            continue
+        try:
+            return datetime.now(ZoneInfo(nome))
+        except Exception:  # noqa: BLE001
+            continue
+    return datetime.now()
+
+
+def build_pdf_report(metrics: dict, logo_path: str | None = None, fuso: str | None = None) -> bytes:
     styles = _styles()
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -468,7 +488,7 @@ def build_pdf_report(metrics: dict, logo_path: str | None = None) -> bytes:
     meta_style = ParagraphStyle("lp_meta", parent=styles["small"], alignment=TA_RIGHT, leading=10.5)
     meta_block = [
         Paragraph("Relatório de análise epidemiológica", meta_style),
-        Paragraph(f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}", meta_style),
+        Paragraph(f"Gerado em {_agora(fuso).strftime('%d/%m/%Y às %H:%M')}", meta_style),
     ]
     logo_cell = ""
     if logo_path:

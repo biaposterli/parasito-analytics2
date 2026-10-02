@@ -1545,7 +1545,11 @@ if uploaded_file is not None:
                     with col_dl2:
                         st.download_button(
                             "⬇ Baixar relatório em PDF",
-                            data=build_pdf_report(metrics, logo_path=str(LOGO_PDF_PATH) if LOGO_PDF_PATH.exists() else None),
+                            data=build_pdf_report(
+                                metrics,
+                                logo_path=str(LOGO_PDF_PATH) if LOGO_PDF_PATH.exists() else None,
+                                fuso=getattr(st.context, "timezone", None),  # fuso do navegador de quem usa
+                            ),
                             file_name="Relatorio_Analise_Epidemiologica.pdf",
                             mime="application/pdf",
                             width="stretch",
