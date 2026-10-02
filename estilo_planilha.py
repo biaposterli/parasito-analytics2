@@ -126,7 +126,7 @@ def _leia_me(ws, logo_path):
         ("Dados", "onde você registra os resultados — uma linha por coleta (P1, P2, P3…) de cada paciente."),
         ("Legenda", "o que é cada coluna e os valores aceitos."),
         ("Especies_Reconhecidas", "parasitos que o sistema já reconhece e as grafias aceitas."),
-        ("Config_*", "configuração da análise (opcional): parasitos, métodos e nº de amostras."),
+        ("Config_*", "configuração da análise (opcional): parasitos, métodos, nº de amostras e critérios de inclusão."),
     ]
     for nome, desc in abas:
         c = ws.cell(linha, 2, f"{nome}  —  {desc}")
@@ -228,7 +228,7 @@ def _config(ws, nome, categorias, amostras):
     if "Amostra" in col and amostras:
         _lista(ws, list(amostras), f"{col['Amostra']}2:{col['Amostra']}{ultima}",
                "Amostra", "Valores esperados: " + ", ".join(amostras) + ".")
-    if nome == "Config_Amostras":
+    if nome in ("Config_Amostras", "Config_Criterios"):
         for row in ws.iter_rows(min_row=2):
             row[0].font = Font(name=SANS, size=11, bold=True, color=MATA)
             if len(row) > 1:
@@ -308,6 +308,8 @@ DESCRICAO_ABAS = {
     "Config_Parasitos": "Configuração usada: parasitos incluídos e classificação.",
     "Config_Metodos": "Configuração usada: métodos incluídos e tipo de amostra.",
     "Config_Amostras": "Configuração usada: número de amostras por paciente.",
+    "Config_Criterios": "Configuração usada: critérios de inclusão de pacientes.",
+    "Pacientes_Excluidos": "Pacientes que não atenderam aos critérios de inclusão, com o motivo.",
 }
 
 _COLS_PCT = ("valor_pct", "prevalencia", "ic95_inf", "ic95_sup", "%", "prevalencia_cumulativa")

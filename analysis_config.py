@@ -25,6 +25,8 @@ from analysis_engine import (
     DOMINIO_LAMINA,
     METHOD_CATALOG,
     PARASITE_MAP,
+    CRITERIOS_PADRAO,
+    TODAS,
     AnalysisConfig,
     _parse_result_cell_raw,
     categoria_de,
@@ -36,7 +38,8 @@ from estilo_planilha import estilizar_config
 SHEET_PARASITOS = "Config_Parasitos"
 SHEET_METODOS = "Config_Metodos"
 SHEET_AMOSTRAS = "Config_Amostras"
-CONFIG_SHEETS = (SHEET_PARASITOS, SHEET_METODOS, SHEET_AMOSTRAS)
+SHEET_CRITERIOS = "Config_Criterios"
+CONFIG_SHEETS = (SHEET_PARASITOS, SHEET_METODOS, SHEET_AMOSTRAS, SHEET_CRITERIOS)
 
 AMOSTRA_FEZES = "Fezes"
 AMOSTRA_LAMINA = "Lâmina (Graham)"
@@ -45,6 +48,36 @@ AMOSTRAS_VALIDAS = (AMOSTRA_FEZES, AMOSTRA_LAMINA)
 PAR_COLS = ["Incluir", "Parasito", "Classificação", "Agrupar como", "Encontrado em", "Ocorrências"]
 MET_COLS = ["Incluir", "Coluna", "Método", "Amostra"]
 PARAM_N_AMOSTRAS = "Quantidade de amostras por paciente"
+
+# Aba Config_Criterios: (chave interna, rótulo na planilha, explicação)
+CRITERIOS_ROTULOS = [
+    ("min_fezes", "Mínimo de coletas com fezes entregues",
+     "0 = sem exigência; um número (1, 2...) ou 'Todas' (todas as coletas P1..Pn consideradas)."),
+    ("min_lamina", "Mínimo de coletas com lâmina entregue",
+     "0 = sem exigência; um número (1, 2...) ou 'Todas'."),
+    ("excluir_inconclusivos", "Excluir paciente com amostra sem resultado",
+     "Sim = exclui quem teve 'Amostra insuficiente' ou célula vazia em algum método incluído."),
+    ("exigir_todos_metodos", "Exigir todos os métodos realizados",
+     "Sim = exclui quem teve algum método incluído marcado 'Não realizado'."),
+]
+
+
+def _criterio_valor_planilha(chave, valor):
+    if chave in ("min_fezes", "min_lamina"):
+        return "Todas" if valor == TODAS else int(valor or 0)
+    return "Sim" if valor else "Não"
+
+
+def _criterio_da_planilha(chave, valor):
+    if chave in ("min_fezes", "min_lamina"):
+        k = _key(valor)
+        if k.startswith("tod"):
+            return TODAS
+        try:
+            return max(0, int(float(valor)))
+        except (TypeError, ValueError):
+            return 0
+    return _as_bool(valor, default=False)
 
 
 # ----------------------------------------------------------------------
@@ -223,6 +256,21 @@ def ler_config_da_planilha(xls: pd.ExcelFile) -> dict:
                 except (TypeError, ValueError):
                     pass
                 break
+
+    s = by_key.get(_key(SHEET_CRITERIOS))
+    if s:
+        d = pd.read_excel(xls, sheet_name=s, header=None)
+        por_rotulo = {_key(r): ch for ch, r, _ in CRITERIOS_ROTULOS}
+        crit = dict(CRITERIOS_PADRAO)
+        achou = False
+        for _, r in d.iterrows():
+            vals = r.tolist()
+            if len(vals) >= 2 and _key(vals[0]) in por_rotulo:
+                ch = por_rotulo[_key(vals[0])]
+                crit[ch] = _criterio_da_planilha(ch, vals[1])
+                achou = True
+        if achou:
+            out["criterios"] = crit
     return out
 
 
@@ -294,7 +342,7 @@ def atualizar_contagens(parasitos: pd.DataFrame, df: pd.DataFrame, metodos: pd.D
 # ----------------------------------------------------------------------
 # tabelas editadas -> AnalysisConfig
 # ----------------------------------------------------------------------
-def construir_config(parasitos: pd.DataFrame, metodos: pd.DataFrame, n_amostras) -> tuple[AnalysisConfig, list[str]]:
+def construir_config(parasitos: pd.DataFrame, metodos: pd.DataFrame, n_amostras, criterios=None) -> tuple[AnalysisConfig, list[str]]:
     avisos: list[str] = []
 
     met_tuplas = []
@@ -343,6 +391,7 @@ def construir_config(parasitos: pd.DataFrame, metodos: pd.DataFrame, n_amostras)
     cfg = AnalysisConfig(
         renomear=renomear, excluidos=excluidos, categorias=categorias,
         metodos=met_tuplas, n_amostras=int(n_amostras) if n_amostras else None,
+        criterios={**CRITERIOS_PADRAO, **(criterios or {})},
     )
     return cfg, avisos
 
@@ -350,7 +399,7 @@ def construir_config(parasitos: pd.DataFrame, metodos: pd.DataFrame, n_amostras)
 # ----------------------------------------------------------------------
 # exportação
 # ----------------------------------------------------------------------
-def _abas_config(parasitos: pd.DataFrame, metodos: pd.DataFrame, n_amostras) -> dict[str, pd.DataFrame]:
+def _abas_config(parasitos: pd.DataFrame, metodos: pd.DataFrame, n_amostras, criterios=None) -> dict[str, pd.DataFrame]:
     par = parasitos.copy()
     par["Incluir"] = par["Incluir"].apply(lambda b: "Sim" if _as_bool(b) else "Não")
     par = par[[c for c in ["Incluir", "Parasito", "Classificação", "Agrupar como"] if c in par.columns]]
@@ -362,7 +411,12 @@ def _abas_config(parasitos: pd.DataFrame, metodos: pd.DataFrame, n_amostras) -> 
           "Coletas P1..Pn consideradas por paciente. Coletas acima desse número são ignoradas."]],
         columns=["Parâmetro", "Valor", "Observação"],
     )
-    return {SHEET_PARASITOS: par, SHEET_METODOS: met, SHEET_AMOSTRAS: amo}
+    c = {**CRITERIOS_PADRAO, **(criterios or {})}
+    cri = pd.DataFrame(
+        [[rot, _criterio_valor_planilha(ch, c[ch]), expl] for ch, rot, expl in CRITERIOS_ROTULOS],
+        columns=["Critério de inclusão", "Valor", "Observação"],
+    )
+    return {SHEET_PARASITOS: par, SHEET_METODOS: met, SHEET_AMOSTRAS: amo, SHEET_CRITERIOS: cri}
 
 
 def _ajustar_larguras(ws):
@@ -371,18 +425,18 @@ def _ajustar_larguras(ws):
         ws.column_dimensions[col[0].column_letter].width = min(max(10, largura + 2), 60)
 
 
-def config_xlsx_bytes(parasitos, metodos, n_amostras) -> bytes:
+def config_xlsx_bytes(parasitos, metodos, n_amostras, criterios=None) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as w:
-        for nome, d in _abas_config(parasitos, metodos, n_amostras).items():
+        for nome, d in _abas_config(parasitos, metodos, n_amostras, criterios).items():
             d.to_excel(w, sheet_name=nome, index=False)
             _ajustar_larguras(w.sheets[nome])
     return estilizar_config(buf.getvalue(), CATEGORIAS_VALIDAS, AMOSTRAS_VALIDAS)
 
 
-def planilha_com_config_bytes(original: bytes, parasitos, metodos, n_amostras) -> bytes:
+def planilha_com_config_bytes(original: bytes, parasitos, metodos, n_amostras, criterios=None) -> bytes:
     """Planilha original + abas Config_* (substitui as antigas, se houver)."""
-    abas = _abas_config(parasitos, metodos, n_amostras)
+    abas = _abas_config(parasitos, metodos, n_amostras, criterios)
     try:
         from openpyxl import load_workbook
         wb = load_workbook(io.BytesIO(original))

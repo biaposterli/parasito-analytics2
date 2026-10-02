@@ -18,12 +18,15 @@ import streamlit as st
 
 from analysis_engine import (
     CATEGORIAS_VALIDAS,
+    CRITERIOS_PADRAO,
+    TODAS,
     METHOD_CATALOG,
     PARASITE_MAP,
     PATOGENICOS,
     COMENSAIS,
     REQUIRED_COLUMNS,
     coletas_duplicadas,
+    criterios_ativos,
     coletas_nao_reconhecidas,
     compute_metrics,
     norm_text,
@@ -564,6 +567,7 @@ def passo_configuracao(df: pd.DataFrame, file_bytes: bytes, file_name: str, cfg_
         ss["cfg_file_id"] = file_id
         ss["cfg_par"], ss["cfg_met"], ss["cfg_n"], ss["cfg_max"] = par, met, n, mx
         ss["cfg_avisos"] = avisos
+        ss["cfg_crit"] = {**CRITERIOS_PADRAO, **cfg_planilha.get("criterios", {})}
         ss["cfg_origem"] = sorted(cfg_planilha.keys())
         ss["cfg_ver"] = ss.get("cfg_ver", 0) + 1
     ver = ss["cfg_ver"]
@@ -571,7 +575,8 @@ def passo_configuracao(df: pd.DataFrame, file_bytes: bytes, file_name: str, cfg_
     with st.container(key="pj-step-3"):
         step_header(3, "Configure a análise")
         if ss["cfg_origem"]:
-            partes = {"parasitos": "parasitos", "metodos": "métodos", "n_amostras": "nº de amostras"}
+            partes = {"parasitos": "parasitos", "metodos": "métodos", "n_amostras": "nº de amostras",
+                      "criterios": "critérios de inclusão"}
             st.success(
                 "Configuração lida da própria planilha ("
                 + ", ".join(partes[k] for k in ss["cfg_origem"])
@@ -588,7 +593,9 @@ def passo_configuracao(df: pd.DataFrame, file_bytes: bytes, file_name: str, cfg_
             st.warning(a)
 
         with st.form(f"pj-cfg-{ver}", border=False):
-            t_par, t_met, t_amo = st.tabs(["🦠  Parasitos", "🔬  Métodos", "🧪  Amostras"])
+            t_par, t_met, t_amo, t_cri = st.tabs(
+                ["🦠  Parasitos", "🔬  Métodos", "🧪  Amostras", "✅  Critérios de inclusão"]
+            )
             with t_par:
                 st.caption(
                     "Desmarque **Incluir** para deixar um parasito fora da análise (uma amostra que só "
@@ -641,6 +648,60 @@ def passo_configuracao(df: pd.DataFrame, file_bytes: bytes, file_name: str, cfg_
                     (f"A planilha tem coletas até **P{mx}**. " if mx else "Nenhum rótulo P1, P2... reconhecido. ")
                     + "Reduzir o número permite, por exemplo, ver o resultado com só 1 ou 2 amostras por paciente."
                 )
+            with t_cri:
+                st.caption(
+                    "Defina quais pacientes entram na análise. Quem não atender a algum critério fica "
+                    "**fora de todas as contas** (numeradores e denominadores) e aparece no relatório na "
+                    "lista de excluídos, com o motivo. Com tudo desligado, todos os pacientes entram."
+                )
+                crit = ss["cfg_crit"]
+                n_ref = int(ss["cfg_n"])
+
+                def _opcoes_min(n):
+                    return [0] + list(range(1, n)) + [TODAS]
+
+                def _rotulo_min(v, n=n_ref):
+                    if v == 0:
+                        return "Sem exigência"
+                    if v == TODAS:
+                        return f"Todas as coletas (P1–P{n})"
+                    return f"Pelo menos {v}"
+
+                def _valor_atual(v, n=n_ref):
+                    if v == TODAS or v in _opcoes_min(n):
+                        return v
+                    return TODAS if v >= n else 0
+
+                c_f, c_l = st.columns(2)
+                with c_f:
+                    sel_min_f = st.selectbox(
+                        "Coletas com pote de fezes entregue", _opcoes_min(n_ref),
+                        index=_opcoes_min(n_ref).index(_valor_atual(crit["min_fezes"])),
+                        format_func=_rotulo_min, key=f"cri-f-{ver}",
+                        help="Nº mínimo de coletas (P1..Pn) em que o paciente entregou o pote de fezes.",
+                    )
+                with c_l:
+                    sel_min_l = st.selectbox(
+                        "Coletas com lâmina entregue", _opcoes_min(n_ref),
+                        index=_opcoes_min(n_ref).index(_valor_atual(crit["min_lamina"])),
+                        format_func=_rotulo_min, key=f"cri-l-{ver}",
+                        help="Nº mínimo de coletas (P1..Pn) em que o paciente entregou a lâmina.",
+                    )
+                sel_inc = st.checkbox(
+                    "Excluir paciente com alguma amostra sem resultado",
+                    value=bool(crit["excluir_inconclusivos"]), key=f"cri-inc-{ver}",
+                    help="Amostra entregue com 'Amostra insuficiente' ou célula vazia em algum método incluído.",
+                )
+                sel_todos = st.checkbox(
+                    "Excluir paciente com algum método não realizado",
+                    value=bool(crit["exigir_todos_metodos"]), key=f"cri-met-{ver}",
+                    help="Algum método incluído marcado 'Não realizado' em amostra entregue.",
+                )
+                st.caption(
+                    "Exemplo: para considerar só quem entregou e teve analisadas **todas** as amostras, "
+                    "escolha *Todas as coletas* para fezes (e lâmina, se for o caso) e marque as duas opções."
+                    " A quantidade de coletas segue a aba **Amostras**."
+                )
             aplicar = st.form_submit_button("Aplicar configuração e atualizar relatório", type="primary")
 
         if aplicar:
@@ -655,11 +716,15 @@ def passo_configuracao(df: pd.DataFrame, file_bytes: bytes, file_name: str, cfg_
             par["Agrupar como"] = par["Agrupar como"].fillna("")
             ss["cfg_par"] = atualizar_contagens(par, df, ss["cfg_met"])
             ss["cfg_n"] = int(n_sel)
+            ss["cfg_crit"] = {
+                "min_fezes": sel_min_f, "min_lamina": sel_min_l,
+                "excluir_inconclusivos": bool(sel_inc), "exigir_todos_metodos": bool(sel_todos),
+            }
             ss["cfg_avisos"] = []
             ss["cfg_ver"] = ver + 1
             st.rerun()
 
-        cfg, avisos_cfg = construir_config(ss["cfg_par"], ss["cfg_met"], ss["cfg_n"])
+        cfg, avisos_cfg = construir_config(ss["cfg_par"], ss["cfg_met"], ss["cfg_n"], ss["cfg_crit"])
         for a in avisos_cfg:
             st.warning(a)
 
@@ -671,7 +736,8 @@ def passo_configuracao(df: pd.DataFrame, file_bytes: bytes, file_name: str, cfg_
             f"**Em uso:** {len(cfg.categorias)} parasito(s) — {n_pat} patogênico(s), {n_com} comensal(is)"
             + (f", {len(cfg.excluidos)} excluído(s)" if cfg.excluidos else "")
             + f" · fezes: {', '.join(fezes) or '—'} · lâmina: {', '.join(lamina) or '—'}"
-            + f" · até P{cfg.n_amostras} por paciente."
+            + f" · até P{cfg.n_amostras} por paciente"
+            + (" · critérios de inclusão ligados." if criterios_ativos(cfg.criterios) else ".")
         )
 
         base_nome = Path(file_name).stem
@@ -679,7 +745,7 @@ def passo_configuracao(df: pd.DataFrame, file_bytes: bytes, file_name: str, cfg_
         with d1:
             st.download_button(
                 "⬇ Baixar só a configuração (.xlsx)",
-                data=config_xlsx_bytes(ss["cfg_par"], ss["cfg_met"], ss["cfg_n"]),
+                data=config_xlsx_bytes(ss["cfg_par"], ss["cfg_met"], ss["cfg_n"], ss["cfg_crit"]),
                 file_name=f"Configuracao_{base_nome}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 width="stretch",
@@ -687,7 +753,7 @@ def passo_configuracao(df: pd.DataFrame, file_bytes: bytes, file_name: str, cfg_
         with d2:
             st.download_button(
                 "⬇ Baixar minha planilha com a configuração",
-                data=planilha_com_config_bytes(file_bytes, ss["cfg_par"], ss["cfg_met"], ss["cfg_n"]),
+                data=planilha_com_config_bytes(file_bytes, ss["cfg_par"], ss["cfg_met"], ss["cfg_n"], ss["cfg_crit"]),
                 file_name=f"{base_nome}_com_configuracao.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 width="stretch",
@@ -830,10 +896,11 @@ def generate_template_bytes() -> bytes:
             "ser executado NESSA amostra (mesmo com o pote/lâmina entregue) — diferente de 'Amostra "
             "insuficiente', que é quando o método foi tentado mas não deu resultado. Uma célula "
             "'Não realizado' não entra em nenhum denominador do relatório para aquele método.\n\n"
-            "CONFIGURAÇÃO DA ANÁLISE (opcional) — abas Config_Parasitos, Config_Metodos e "
-            "Config_Amostras: defina quais parasitos entram na análise (Incluir = Sim/Não), se cada "
+            "CONFIGURAÇÃO DA ANÁLISE (opcional) — abas Config_Parasitos, Config_Metodos, "
+            "Config_Amostras e Config_Criterios: defina quais parasitos entram na análise (Incluir = Sim/Não), se cada "
             "um é Patogênico ou Comensal, quais métodos entram e se são de Fezes ou de Lâmina "
-            "(Graham), e quantas amostras (P1..Pn) por paciente considerar. 'Agrupar como' junta "
+            "(Graham), e quantas amostras (P1..Pn) por paciente considerar e os critérios de inclusão de pacientes (por exemplo, "
+            "só quem entregou todas as amostras). 'Agrupar como' junta "
             "grafias diferentes numa só espécie. Se essas abas estiverem na planilha, o site já abre "
             "a configuração preenchida; se não estiverem, você configura no próprio site e pode "
             "baixar a configuração para reaproveitar."
@@ -1037,14 +1104,19 @@ if uploaded_file is not None:
         metrics = compute_metrics(df, cfg)
         metodos_ativos_nomes = metrics.get("metodos_ativos_nomes", [])
 
-        if metrics["total"] == 0:
+        if metrics["total"] == 0 and metrics.get("total_antes_criterios"):
+            st.error(
+                f"Nenhum dos {metrics['total_antes_criterios']} pacientes atende aos critérios de inclusão "
+                "definidos no passo 03. Revise a aba **Critérios de inclusão**."
+            )
+        elif metrics["total"] == 0:
             st.error("Nenhum paciente identificado. Confira se a coluna **id_paciente** está preenchida.")
         else:
             # conta só linhas com paciente identificado (linhas em branco no fim da
             # planilha não são coletas)
             n_coletas = int(df["id_paciente"].apply(norm_text).notna().sum())
             st.success(
-                f"Planilha processada: {metrics['total']} pacientes, {n_coletas} coletas. "
+                f"Planilha processada: {metrics.get('total_antes_criterios') or metrics['total']} pacientes, {n_coletas} coletas. "
                 f"Métodos detectados: {', '.join(metodos_ativos_nomes)}. "
                 "Relatório gerado abaixo."
             )
@@ -1071,10 +1143,28 @@ if uploaded_file is not None:
             with st.container(key="pj-step-4"):
                 step_header(4, "Relatório da análise")
                 st.caption(
-                    f"{metrics['total']} pacientes cadastrados · {len(metrics['fecal'])} com amostra "
+                    f"{metrics['total']} pacientes {'incluídos' if metrics.get('criterios') else 'cadastrados'} · {len(metrics['fecal'])} com amostra "
                     f"fecal entregue · {len(metrics['apenas_lamina'])} só com lâmina · métodos: "
                     f"{', '.join(metodos_ativos_nomes)}."
                 )
+
+                if metrics.get("criterios"):
+                    exc = metrics["excluidos_criterios"]
+                    st.markdown(
+                        f"""<div class="pj-note"><strong>Critérios de inclusão:</strong>
+                        {"; ".join(metrics["criterios"])}. Entraram na análise <strong>{metrics['total']}</strong>
+                        de {metrics['total_antes_criterios']} pacientes; <strong>{len(exc)}</strong> foram
+                        excluídos de todas as contas.</div>""",
+                        unsafe_allow_html=True,
+                    )
+                    if len(exc):
+                        with st.expander(f"Ver os {len(exc)} pacientes excluídos e o motivo"):
+                            st.dataframe(
+                                exc.rename(columns={"id_paciente": "Paciente", "nome_paciente": "Nome",
+                                                    "motivo": "Motivo da exclusão"}),
+                                width="stretch", hide_index=True,
+                            )
+                    st.write("")
 
                 n_inconclusivas = (
                     len(metrics["fecal_inconclusivo"])
@@ -1527,10 +1617,16 @@ if uploaded_file is not None:
                             "p_valor": ca["p_valor"],
                             "aviso": ca["aviso"],
                         }]).to_excel(writer, sheet_name="CochranArmitage_NPotes", index=False)
+                        exc = m.get("excluidos_criterios")
+                        if exc is not None and len(exc):
+                            exc.rename(columns={"id_paciente": "id_paciente", "nome_paciente": "nome_paciente",
+                                                "motivo": "motivo_exclusao"}).to_excel(
+                                writer, sheet_name="Pacientes_Excluidos", index=False)
                         # configuração usada — permite reproduzir a análise
                         ss_ = st.session_state
                         if "cfg_par" in ss_:
-                            cfg_xls = pd.ExcelFile(io.BytesIO(config_xlsx_bytes(ss_["cfg_par"], ss_["cfg_met"], ss_["cfg_n"])))
+                            cfg_xls = pd.ExcelFile(io.BytesIO(config_xlsx_bytes(
+                                ss_["cfg_par"], ss_["cfg_met"], ss_["cfg_n"], ss_.get("cfg_crit"))))
                             for aba in cfg_xls.sheet_names:
                                 pd.read_excel(cfg_xls, sheet_name=aba).to_excel(writer, sheet_name=aba, index=False)
                     # capa com sumário + formatação Pirajá (não altera valores)

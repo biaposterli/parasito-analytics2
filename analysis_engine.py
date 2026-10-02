@@ -250,12 +250,15 @@ class AnalysisConfig:
     metodos:    lista de tuplas (coluna, nome, coluna_status, dominio) — mesmo
                 formato de METHOD_CATALOG. None = detectar pela planilha.
     n_amostras: nº máximo de coletas por paciente (P1..Pn). None = todas.
+    criterios:  critérios de inclusão de pacientes (ver CRITERIOS_PADRAO). Vazio
+                ou tudo desligado = todos os pacientes entram, como antes.
     """
     renomear: dict = field(default_factory=dict)
     excluidos: set = field(default_factory=set)
     categorias: dict = field(default_factory=dict)
     metodos: list | None = None
     n_amostras: int | None = None
+    criterios: dict = field(default_factory=dict)
 
 
 def categoria_de(especie, cfg: "AnalysisConfig | None" = None) -> str:
@@ -1107,6 +1110,111 @@ def _empty_metrics(por_paciente: pd.DataFrame, active_methods=None) -> dict:
     }
 
 
+# ----------------------------------------------------------------------
+# Critérios de inclusão de pacientes (definidos por quem usa o sistema)
+#
+#   min_fezes / min_lamina: nº mínimo de coletas DISTINTAS com pote de fezes /
+#       lâmina entregue. 0 = sem exigência; TODAS (-1) = todas as coletas
+#       consideradas na análise (P1..Pn, n = nº de amostras configurado).
+#   excluir_inconclusivos: exclui o paciente se alguma amostra entregue ficou
+#       sem resultado em algum método incluído ("Amostra insuficiente" ou
+#       célula vazia).
+#   exigir_todos_metodos: exclui o paciente se algum método incluído ficou
+#       "Não realizado" em alguma amostra entregue.
+#
+# Os critérios são aplicados por PACIENTE, antes de qualquer cálculo: quem não
+# atende sai de todas as contagens (numeradores e denominadores) e aparece na
+# lista de excluídos, com o motivo.
+# ----------------------------------------------------------------------
+TODAS = -1
+CRITERIOS_PADRAO = {
+    "min_fezes": 0,
+    "min_lamina": 0,
+    "excluir_inconclusivos": False,
+    "exigir_todos_metodos": False,
+}
+
+
+def criterios_ativos(criterios) -> bool:
+    c = {**CRITERIOS_PADRAO, **(criterios or {})}
+    return bool(c["min_fezes"] or c["min_lamina"] or c["excluir_inconclusivos"] or c["exigir_todos_metodos"])
+
+
+def _n_exigido(valor, n_total):
+    return n_total if valor == TODAS else int(valor or 0)
+
+
+def descrever_criterios(criterios, n_total) -> list[str]:
+    """Frases legíveis dos critérios ligados (para o relatório)."""
+    c = {**CRITERIOS_PADRAO, **(criterios or {})}
+    frases = []
+    for chave, material in (("min_fezes", "pote de fezes"), ("min_lamina", "lâmina")):
+        v = c[chave]
+        if v == TODAS:
+            frases.append(f"{material} entregue em todas as {n_total} coletas (P1–P{n_total})")
+        elif v:
+            frases.append(f"{material} entregue em pelo menos {int(v)} coleta(s)")
+    if c["excluir_inconclusivos"]:
+        frases.append("todas as amostras entregues com resultado em todos os métodos (sem \"Amostra insuficiente\" nem célula vazia)")
+    if c["exigir_todos_metodos"]:
+        frases.append("todos os métodos incluídos realizados em todas as amostras entregues (sem \"Não realizado\")")
+    return frases
+
+
+def aplicar_criterios_inclusao(df: pd.DataFrame, active_methods, criterios, n_total: int):
+    """Filtra os pacientes que atendem aos critérios. Devolve (df_filtrado,
+    excluidos), em que excluidos tem id_paciente, nome_paciente e motivo."""
+    vazio = pd.DataFrame(columns=["id_paciente", "nome_paciente", "motivo"])
+    if not criterios_ativos(criterios) or df.empty:
+        return df, vazio
+    c = {**CRITERIOS_PADRAO, **criterios}
+    min_f = _n_exigido(c["min_fezes"], n_total)
+    min_l = _n_exigido(c["min_lamina"], n_total)
+
+    ids = df["id_paciente"].apply(norm_text)
+    manter, excluidos = set(), []
+    for pid, g in df.groupby(ids, dropna=True):
+        if pid is None:
+            continue
+        pote, lamina = set(), set()
+        inconclusivos, nao_realizados = set(), set()
+        for idx, row in g.iterrows():
+            st_f = std_status(row.get("status_amostra"))
+            st_l = std_status(row.get("status_lamina"))
+            coleta = norm_coleta(row.get("coleta")) or f"__linha_{idx}"
+            if st_f == "Entregue":
+                pote.add(coleta)
+            if st_l == "Entregue":
+                lamina.add(coleta)
+            for col, nome_m, status_key, _ in active_methods:
+                status = st_f if status_key == "status_amostra" else st_l
+                if status != "Entregue":
+                    continue
+                label, _, positivo = _parse_result_cell_raw(row.get(col))
+                inst = _classify_instance(label, positivo)
+                rot = norm_coleta(row.get("coleta")) or "?"
+                if inst == "inconclusivo":
+                    inconclusivos.add(f"{nome_m} ({rot})")
+                elif inst == "nao_realizado":
+                    nao_realizados.add(f"{nome_m} ({rot})")
+        motivos = []
+        if min_f and len(pote) < min_f:
+            motivos.append(f"fezes em {len(pote)} de {min_f} coleta(s) exigida(s)")
+        if min_l and len(lamina) < min_l:
+            motivos.append(f"lâmina em {len(lamina)} de {min_l} coleta(s) exigida(s)")
+        if c["excluir_inconclusivos"] and inconclusivos:
+            motivos.append("sem resultado: " + ", ".join(sorted(inconclusivos)))
+        if c["exigir_todos_metodos"] and nao_realizados:
+            motivos.append("não realizado: " + ", ".join(sorted(nao_realizados)))
+        if motivos:
+            excluidos.append({"id_paciente": pid, "nome_paciente": norm_text(g["nome_paciente"].iloc[0]) or "",
+                              "motivo": "; ".join(motivos)})
+        else:
+            manter.add(pid)
+    df_f = df[ids.isin(manter).values]
+    return df_f, (pd.DataFrame(excluidos, columns=vazio.columns) if excluidos else vazio)
+
+
 def aplicar_limite_amostras(df: pd.DataFrame, n_amostras) -> pd.DataFrame:
     """Descarta as linhas de coletas P(k) com k > n_amostras. Linhas sem rótulo
     Pn reconhecível são mantidas (o app avisa sobre elas à parte)."""
@@ -1118,12 +1226,28 @@ def aplicar_limite_amostras(df: pd.DataFrame, n_amostras) -> pd.DataFrame:
 
 
 def compute_metrics(df: pd.DataFrame, cfg: "AnalysisConfig | None" = None) -> dict:
+    """Aplica limite de amostras e critérios de inclusão e calcula as métricas.
+    Acrescenta ao resultado: 'criterios' (frases dos critérios ligados),
+    'excluidos_criterios' (pacientes excluídos e motivo) e
+    'total_antes_criterios'."""
     if cfg is not None and cfg.metodos is not None:
         active_methods = [m for m in cfg.metodos if m[0] in df.columns]
     else:
         active_methods = get_active_methods(df)
     if cfg is not None:
         df = aplicar_limite_amostras(df, cfg.n_amostras)
+    total_antes = df["id_paciente"].apply(norm_text).dropna().nunique() if "id_paciente" in df.columns else 0
+    criterios = cfg.criterios if cfg is not None else {}
+    n_total = (cfg.n_amostras if cfg is not None and cfg.n_amostras else None) or max_coletas(df) or 1
+    df, excluidos = aplicar_criterios_inclusao(df, active_methods, criterios, n_total)
+    m = _compute_metrics(df, cfg, active_methods)
+    m["criterios"] = descrever_criterios(criterios, n_total) if criterios_ativos(criterios) else []
+    m["excluidos_criterios"] = excluidos
+    m["total_antes_criterios"] = int(total_antes)
+    return m
+
+
+def _compute_metrics(df: pd.DataFrame, cfg, active_methods) -> dict:
     fecal_methods_ativos = active_fecal_methods(active_methods)
 
     por_paciente = build_per_child(df, active_methods, cfg)

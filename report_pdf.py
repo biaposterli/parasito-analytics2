@@ -514,7 +514,7 @@ def build_pdf_report(metrics: dict, logo_path: str | None = None, fuso: str | No
     story.append(Spacer(1, 3 * mm))
 
     story.append(Paragraph(
-        f"{metrics['total']} pacientes cadastrados &middot; {len(metrics['fecal'])} com amostra fecal "
+        f"{metrics['total']} pacientes {'incluídos' if metrics.get('criterios') else 'cadastrados'} &middot; {len(metrics['fecal'])} com amostra fecal "
         f"entregue &middot; {len(metrics['apenas_lamina'])} só com lâmina &middot; métodos "
         f"analisados: {', '.join(metodos_ativos_nomes) if metodos_ativos_nomes else '—'}.",
         styles["body"],
@@ -524,6 +524,19 @@ def build_pdf_report(metrics: dict, logo_path: str | None = None, fuso: str | No
         story.append(Spacer(1, 2 * mm))
         story.append(Paragraph("<b>Configuração da análise</b> &middot; " + cfg_txt, styles["small"]))
     story.append(Spacer(1, 4 * mm))
+
+    # ---- critérios de inclusão (se ligados) ----
+    if metrics.get("criterios"):
+        exc = metrics.get("excluidos_criterios")
+        n_exc = 0 if exc is None else len(exc)
+        story.append(Paragraph(
+            f"<b>Critérios de inclusão:</b> {'; '.join(metrics['criterios'])}. Entraram na análise "
+            f"{metrics['total']} de {metrics.get('total_antes_criterios', metrics['total'])} pacientes; "
+            f"{n_exc} foram excluídos de todas as contas (lista com o motivo no relatório em Excel, aba "
+            f"Pacientes_Excluidos).",
+            styles["note"],
+        ))
+        story.append(Spacer(1, 3 * mm))
 
     # ---- resumo executivo ----
     story.append(_stat_table(metrics))
