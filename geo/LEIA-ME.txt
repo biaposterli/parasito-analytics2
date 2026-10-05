@@ -1,0 +1,14 @@
+Malha municipal usada nos mapas do Pirajá
+
+Fonte: IBGE — Malha Municipal Digital (MMD), versão 2025 (BR_Municipios_2025).
+https://www.ibge.gov.br/geociencias/organizacao-do-territorio/malhas-territoriais.html
+Sistema de referência: SIRGAS 2000 (EPSG:4674).
+
+Os arquivos desta pasta são uma versão SIMPLIFICADA da malha original, só para
+desenho de mapas temáticos: geometrias generalizadas com tolerância de 0,0008°
+(cerca de 90 m) e coordenadas arredondadas em 5 casas decimais, separadas por UF
+(malha_municipal_2025/<UF>.geojson.gz). ufs_2025.geojson.gz traz o contorno dos
+estados, ainda mais generalizado, para o mapa de localização.
+
+Antes de usar a malha original, leia a Nota Metodológica do IBGE "Informações
+técnicas e legais para a utilização dos dados publicados".

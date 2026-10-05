@@ -47,6 +47,7 @@ from analysis_config import (
 )
 from report_pdf import _agora, build_pdf_report
 from estilo_planilha import estilizar_modelo, estilizar_relatorio
+import mapas
 
 APP_DIR = Path(__file__).parent
 
@@ -551,6 +552,90 @@ def bloco_dominio(titulo, caption, esp_df, n_base, n_pos, prev, ic, n_pat, prev_
         st.dataframe(tab, width="stretch", hide_index=True)
 
 
+@st.cache_data(show_spinner=False)
+def _ler_limites_cache(conteudo: bytes, nome: str):
+    return mapas.ler_limites(conteudo, nome)
+
+
+def painel_mapa(metrics: dict):
+    """Controles e saída do mapa opcional (seção Território da Visão geral)."""
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        nivel = st.radio("Nível", ["Município", "Bairro"], horizontal=True, key="mapa_nivel")
+    with c2:
+        indicador = st.radio("Indicador", ["Todos os parasitos", "Somente patogênicos"], horizontal=True,
+                             key="mapa_ind")
+    with c3:
+        modo = st.radio("Classes de prevalência", ["Automáticas", "Fixas"], horizontal=True, key="mapa_cls",
+                        help="Automáticas: 5 faixas de 5 em 5 pontos (ou mais largas) a partir dos dados. "
+                             "Fixas: <10, 10–20, 20–40, 40–60, ≥60% — use para comparar estudos.")
+    limites, col_nome = None, None
+    if nivel == "Bairro":
+        st.caption(
+            "A malha do IBGE usada aqui vai até município. Para pintar os **bairros**, envie o arquivo com os "
+            "limites dos bairros (da prefeitura ou da malha de bairros do IBGE): GeoJSON, ou shapefile "
+            "compactado em .zip (com os arquivos .shp, .shx, .dbf e .prj)."
+        )
+        arq = st.file_uploader("Limites dos bairros", type=["geojson", "json", "zip"], key="mapa_lim")
+        if arq is None:
+            st.info("Envie o arquivo de limites dos bairros para gerar este mapa.")
+            st.session_state.pop("mapa_pdf", None)
+            return
+        try:
+            limites, cols = _ler_limites_cache(arq.getvalue(), arq.name)
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Não consegui ler esse arquivo de limites ({exc}).")
+            st.session_state.pop("mapa_pdf", None)
+            return
+        if not cols:
+            st.error("O arquivo de limites não tem nenhuma coluna de texto com o nome do bairro.")
+            return
+        sug = mapas.coluna_nome_provavel(cols)
+        col_nome = st.selectbox("Coluna com o nome do bairro no arquivo", cols,
+                                index=cols.index(sug) if sug in cols else 0, key="mapa_colnome")
+    n_areas = len(metrics["territorio_municipio" if nivel == "Município" else "territorio_bairro"])
+    rot = st.checkbox("Mostrar nome e valor dentro das áreas", value=n_areas <= 12, key=f"mapa_rot_{nivel}",
+                      help="Com muitas áreas pequenas os rótulos se sobrepõem; os valores continuam ao "
+                           "passar o mouse no mapa interativo.")
+
+    with st.spinner("Desenhando o mapa…"):
+        try:
+            r = mapas.preparar_mapa(
+                metrics, "municipio" if nivel == "Município" else "bairro",
+                "todos" if indicador == "Todos os parasitos" else "patogenicos",
+                modo_classes="fixas" if modo == "Fixas" else "auto",
+                limites=limites, col_nome=col_nome, mostrar_rotulos=rot,
+            )
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Não foi possível gerar o mapa ({exc}).")
+            st.session_state.pop("mapa_pdf", None)
+            return
+    for a in r.get("avisos", []):
+        st.warning(a)
+    if not r["ok"]:
+        st.info(r["erro"])
+        st.session_state.pop("mapa_pdf", None)
+        return
+    st.plotly_chart(r["fig_interativa"], width="stretch", key="mapa_plot",
+                    config={"displaylogo": False, "scrollZoom": True})
+    png = mapas.figura_bytes(r["fig_estatica"], "png", 300)
+    tif = mapas.figura_bytes(r["fig_estatica"], "tiff", 300)
+    mapas.plt.close(r["fig_estatica"])
+    st.session_state["mapa_pdf"] = (r["titulo"], png)
+    st.caption("Figura para artigo (300 dpi), com rosa dos ventos, escala, grade de coordenadas, mapa de "
+               "localização, legenda e fonte. Ela também entra no relatório em PDF.")
+    with st.expander("Ver a figura para artigo"):
+        st.image(png, width="stretch")
+    d1, d2 = st.columns(2)
+    nome_base = "mapa_prevalencia_" + ("municipio" if nivel == "Município" else "bairro")
+    with d1:
+        st.download_button("⬇ Figura PNG (300 dpi)", data=png, file_name=f"{nome_base}.png", mime="image/png",
+                           width="stretch")
+    with d2:
+        st.download_button("⬇ Figura TIFF (300 dpi)", data=tif, file_name=f"{nome_base}.tiff", mime="image/tiff",
+                           width="stretch")
+
+
 # colunas da planilha que nunca são método (não aparecem como opção no passo 03)
 COLUNAS_NAO_METODO = set(REQUIRED_COLUMNS) | {
     "nome_crianca", "nome_responsavel", "status_amostra", "status_lamina", "observacoes", "observacao",
@@ -906,7 +991,7 @@ def generate_template_bytes() -> bytes:
             "insuficiente', que é quando o método foi tentado mas não deu resultado. Uma célula "
             "'Não realizado' não entra em nenhum denominador do relatório para aquele método.\n\n"
             "Território (opcional): preencha bairro, municipio e uf com o lugar onde o paciente MORA. "
-            "Com isso o relatório mostra a prevalência por bairro e por município (e, depois, o mapa). "
+            "Com isso o relatório mostra a prevalência por bairro e por município e pode gerar o mapa (opcional). "
             "Escreva o nome do bairro sempre do mesmo jeito; acentos e maiúsculas não importam. Não "
             "coloque endereço.\n\n"
             "CONFIGURAÇÃO DA ANÁLISE (opcional) — abas Config_Parasitos, Config_Metodos, "
@@ -1334,6 +1419,18 @@ if uploaded_file is not None:
                         if avisos_t:
                             st.caption("Atenção: " + "; ".join(avisos_t) + ".")
 
+                        # ---- mapa (opcional) ----
+                        st.write("")
+                        gerar_mapa = st.toggle(
+                            "🗺️  Gerar mapa", key="mapa_on",
+                            help="Mapa de prevalência por município ou bairro de residência, no padrão "
+                                 "cartográfico (para artigo) e interativo. Opcional.",
+                        )
+                        if not gerar_mapa:
+                            st.session_state.pop("mapa_pdf", None)
+                        else:
+                            painel_mapa(metrics)
+
                 # ---------------------------------------------------------
                 # ABA 2 — ESPÉCIES & PARASITOS
                 # ---------------------------------------------------------
@@ -1740,6 +1837,7 @@ if uploaded_file is not None:
                                 metrics,
                                 logo_path=str(LOGO_PDF_PATH) if LOGO_PDF_PATH.exists() else None,
                                 fuso=getattr(st.context, "timezone", None),  # fuso do navegador de quem usa
+                                mapa=st.session_state.get("mapa_pdf"),  # só se o mapa foi gerado
                             ),
                             file_name="Relatorio_Analise_Epidemiologica.pdf",
                             mime="application/pdf",

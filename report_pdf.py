@@ -73,7 +73,7 @@ except Exception:  # noqa: BLE001
 try:
     for _f in ("InstrumentSans-Regular.ttf", "InstrumentSans-SemiBold.ttf"):
         fm.fontManager.addfont(str(_FONT_DIR / _f))
-    _MPL_FAMILY = "Instrument Sans"
+    _MPL_FAMILY = [fm.FontProperties(fname=str(_FONT_DIR / "InstrumentSans-Regular.ttf")).get_name(), "DejaVu Sans"]
 except Exception:  # noqa: BLE001
     pass
 
@@ -468,7 +468,8 @@ def _agora(fuso: str | None):
     return datetime.now()
 
 
-def build_pdf_report(metrics: dict, logo_path: str | None = None, fuso: str | None = None) -> bytes:
+def build_pdf_report(metrics: dict, logo_path: str | None = None, fuso: str | None = None,
+                     mapa: tuple | None = None) -> bytes:
     styles = _styles()
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -606,6 +607,19 @@ def build_pdf_report(metrics: dict, logo_path: str | None = None, fuso: str | No
             story.append(Paragraph(f"Por {nivel}", ParagraphStyle(
                 f"lp_terr_{nivel}", parent=styles["h2"], fontSize=11.5, spaceBefore=6, spaceAfter=4)))
             story.append(_df_table(t, col_widths=larg + [18 * mm, 18 * mm, 22 * mm, 24 * mm]))
+
+        # mapa (só quando foi gerado no site)
+        if mapa:
+            titulo_mapa, png = mapa
+            from PIL import Image as PILImage
+            im = PILImage.open(io.BytesIO(png))
+            w = 172 * mm
+            story.append(Spacer(1, 4 * mm))
+            story.append(KeepTogether([
+                Paragraph("Mapa", ParagraphStyle("lp_mapa", parent=styles["h2"], fontSize=11.5,
+                                                 spaceBefore=6, spaceAfter=4)),
+                Image(io.BytesIO(png), width=w, height=w * im.height / im.width),
+            ]))
 
     # ---- prevalência de todos os parasitos (fecal + lâmina, unificado) ----
     story.append(Paragraph("Prevalência de todos os parasitos", styles["h2"]))
