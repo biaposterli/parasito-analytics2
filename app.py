@@ -942,7 +942,8 @@ def generate_template_bytes() -> bytes:
         ["nome_paciente", "Nome da criança", "texto livre"],
         ["nome_responsavel", "Nome do responsável (opcional)", "texto livre ou vazio"],
         ["bairro", "Bairro onde o paciente MORA (opcional — usado na prevalência por bairro e no mapa). "
-                   "Só o nome do bairro, nunca o endereço.", "texto, ex.: Lagoa Nova"],
+                   "Só o nome do bairro, nunca o endereço. Em São Paulo/SP use o DISTRITO; no DF, a "
+                   "REGIÃO ADMINISTRATIVA (com municipio = Brasília).", "texto, ex.: Lagoa Nova"],
         ["municipio", "Município onde o paciente mora (opcional, mas necessário para o bairro: há bairros "
                       "com o mesmo nome em cidades diferentes)", "texto, ex.: Natal"],
         ["uf", "Sigla do estado do município (opcional)", "RN, PB, PE..."],
@@ -1013,7 +1014,9 @@ def generate_template_bytes() -> bytes:
             "Território (opcional): preencha bairro, municipio e uf com o lugar onde o paciente MORA. "
             "Com isso o relatório mostra a prevalência por bairro e por município e pode gerar o mapa (opcional). "
             "Escreva o nome do bairro sempre do mesmo jeito; acentos e maiúsculas não importam. Não "
-            "coloque endereço.\n\n"
+            "coloque endereço. Em São Paulo (SP), use o nome do DISTRITO (ex.: Capão Redondo, Itaquera); "
+            "no Distrito Federal, o nome da REGIÃO ADMINISTRATIVA (ex.: Ceilândia, Taguatinga, Plano Piloto) "
+            "e 'Brasília' como município.\n\n"
             "CONFIGURAÇÃO DA ANÁLISE (opcional) — abas Config_Parasitos, Config_Metodos, "
             "Config_Amostras e Config_Criterios: defina quais parasitos entram na análise (Incluir = Sim/Não), se cada "
             "um é Patogênico ou Comensal, quais métodos entram e se são de Fezes ou de Lâmina "

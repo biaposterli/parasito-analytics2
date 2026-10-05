@@ -88,18 +88,34 @@ def contorno_ufs():
         return gpd.GeoDataFrame.from_features(json.load(f)["features"], crs=CRS)
 
 
+FONTE_BAIRROS_IBGE = "IBGE, Malha de Bairros (Censo 2022)"
+
+
 @lru_cache(maxsize=32)
 def bairros_uf(uf: str):
-    """Malha de Bairros do Censo 2022 (IBGE) da UF, ou None se a UF não tiver."""
+    """Divisões intramunicipais da UF: Malha de Bairros do Censo 2022 (IBGE) +
+    malhas complementares de municípios que o IBGE não cobre (pasta
+    geo/malha_bairros_extra — ex.: distritos de São Paulo, Regiões
+    Administrativas do DF). Cada polígono traz a sua 'fonte'. None se não houver."""
     gpd = _gpd()
-    p = GEO_DIR / "malha_bairros_2022" / f"{uf.upper()}.geojson.gz"
-    if not p.exists():
+    partes = []
+    for pasta, fonte in (("malha_bairros_2022", FONTE_BAIRROS_IBGE), ("malha_bairros_extra", None)):
+        p = GEO_DIR / pasta / f"{uf.upper()}.geojson.gz"
+        if p.exists():
+            with gzip.open(p, "rt", encoding="utf-8") as f:
+                g = gpd.GeoDataFrame.from_features(json.load(f)["features"], crs=CRS)
+            if fonte:
+                g["fonte"] = fonte
+            partes.append(g)
+    if not partes:
         return None
-    with gzip.open(p, "rt", encoding="utf-8") as f:
-        g = gpd.GeoDataFrame.from_features(json.load(f)["features"], crs=CRS)
+    g = gpd.GeoDataFrame(pd.concat(partes, ignore_index=True), crs=CRS)
+    # se um município tiver malha complementar, ela substitui a do IBGE para ele
+    extra_mun = set(g.loc[g["fonte"] != FONTE_BAIRROS_IBGE, "cd_mun"].astype(str))
+    g = g[~((g["fonte"] == FONTE_BAIRROS_IBGE) & g["cd_mun"].astype(str).isin(extra_mun))]
     g["_k"] = g["nome"].map(chave)
     g["_km"] = g["municipio"].map(chave)
-    return g
+    return g.reset_index(drop=True)
 
 
 def _codigo_municipio(nome, uf):
@@ -111,6 +127,21 @@ def _codigo_municipio(nome, uf):
         if g is not None:
             achados += [(r.cd_mun, r.uf) for r in g[g["_k"] == k].itertuples()]
     return achados[0] if len(achados) == 1 else None
+
+
+# Cidades em que a divisão intramunicipal oficial não se chama "bairro"
+TERMO_DIVISAO = {"São Paulo/SP": "distrito", "Brasília/DF": "região administrativa"}
+
+# Nomes populares -> nome oficial da divisão (por código de município IBGE)
+APELIDOS = {
+    "5300108": {  # Brasília/DF — Regiões Administrativas
+        "estrutural": "scia", "cidade estrutural": "scia", "vila estrutural": "scia",
+        "sol nascente": "sol nascente/por do sol", "por do sol": "sol nascente/por do sol",
+        "sudoeste": "sudoeste/octogonal", "octogonal": "sudoeste/octogonal",
+        "brasilia": "plano piloto", "asa sul": "plano piloto", "asa norte": "plano piloto",
+        "nucleo bandeirantes": "nucleo bandeirante", "itapoa": "itapoa",
+    },
+}
 
 
 def casar_bairros_ibge(tab: pd.DataFrame):
@@ -137,7 +168,10 @@ def casar_bairros_ibge(tab: pd.DataFrame):
         munis_ok.add(str(cd_mun))
         ufs.add(uf)
         k = chave(r["bairro"])
+        k = APELIDOS.get(str(cd_mun), {}).get(k, k)
         hit = bm[bm["_k"] == k]
+        if hit.empty:  # nome composto na malha ("A/B"): aceita qualquer uma das partes
+            hit = bm[bm["_k"].map(lambda x: k in [p.strip() for p in x.split("/")])]
         if hit.empty:
             parecido = difflib.get_close_matches(k, list(bm["_k"]), n=1, cutoff=0.82)
             if not parecido:
@@ -152,13 +186,13 @@ def casar_bairros_ibge(tab: pd.DataFrame):
                 linha[c] = r[c]
         partes.append(linha)
     if sem_malha:
-        avisos.append("Municípios sem divisão em bairros na malha do IBGE (Censo 2022): "
+        avisos.append("Municípios sem divisão em bairros nas malhas disponíveis (IBGE, Censo 2022, e complementares): "
                       + ", ".join(sorted(sem_malha)) + ". Use o mapa por município ou envie os limites da prefeitura.")
     if aproximados:
-        avisos.append("Bairros associados pelo nome mais parecido na malha do IBGE — confira: "
+        avisos.append("Bairros associados pelo nome mais parecido na malha de bairros — confira: "
                       + "; ".join(aproximados))
     if nao_achados:
-        avisos.append("Bairros não encontrados na malha do IBGE (ficaram fora do mapa): " + ", ".join(nao_achados))
+        avisos.append("Bairros não encontrados nas malhas de bairros (ficaram fora do mapa): " + ", ".join(nao_achados))
     if not partes:
         return None, None, ufs, avisos
     com = gpd.GeoDataFrame(pd.concat(partes, ignore_index=True), crs=CRS)
@@ -169,7 +203,8 @@ def casar_bairros_ibge(tab: pd.DataFrame):
                       + ", ".join(sorted(set(dups))))
         geo = com.drop_duplicates("cd_bairro").set_index("cd_bairro")["geometry"]
         agg = com.groupby("cd_bairro").agg(
-            nome=("nome", " / ".join), n_pacientes=("n_pacientes", "sum"), n_positivos=("n_positivos", "sum"),
+            nome=("nome", " / ".join), fonte=("fonte", "first"),
+            n_pacientes=("n_pacientes", "sum"), n_positivos=("n_positivos", "sum"),
             n_positivos_patogenico=("n_positivos_patogenico", "sum"))
         agg["prevalencia"] = (100 * agg.n_positivos / agg.n_pacientes).round(1)
         agg["prevalencia_patogenico"] = (100 * agg.n_positivos_patogenico / agg.n_pacientes).round(1)
@@ -669,7 +704,8 @@ def preparar_mapa(metrics: dict, nivel: str, indicador: str, modo_classes: str =
                                              "IBGE. Confira bairro/município/UF na planilha, use o mapa por "
                                              "município ou envie os limites da prefeitura.", "avisos": avisos}
             ufs = set(ufs) | set(ufs_b)
-            fonte_bairros = "Bairros: IBGE, Malha de Bairros (Censo 2022)"
+            fontes = sorted(set(areas["fonte"].dropna())) if "fonte" in areas.columns else [FONTE_BAIRROS_IBGE]
+            fonte_bairros = "Limites intramunicipais: " + "; ".join(fontes)
         else:
             areas, todos, av = casar_bairros(tab_b, limites, col_nome)
             avisos += av
@@ -681,7 +717,8 @@ def preparar_mapa(metrics: dict, nivel: str, indicador: str, modo_classes: str =
         rot_area = "Bairro"
         munis = sorted(set(tab_b["municipio"].astype(str)) - {""})
         if municipio_foco:
-            titulo = f"Prevalência de {qual} por bairro de residência — {municipio_foco}"
+            termo = TERMO_DIVISAO.get(municipio_foco, "bairro")
+            titulo = f"Prevalência de {qual} por {termo} de residência — {municipio_foco}"
         else:
             titulo = f"Prevalência de {qual} por bairro de residência" + (f" — {', '.join(munis)}" if len(munis) <= 2 else "")
         if not ufs:

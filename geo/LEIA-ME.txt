@@ -25,3 +25,16 @@ malha_bairros_2022/<UF>.geojson.gz é uma versão SIMPLIFICADA (tolerância de
 do município e do bairro. Só há bairros nos municípios com divisão oficial em
 bairros; segundo o IBGE, os limites originais podem ter sido ajustados para se
 encaixar nos setores censitários.
+
+---------------------------------------------------------------------------
+Malhas complementares (municípios sem bairros na malha do IBGE)
+
+malha_bairros_extra/<UF>.geojson.gz — mesmas regras de simplificação (~20 m),
+convertidas de SIRGAS 2000 / UTM 23S para SIRGAS 2000 geográfico. Cada polígono
+traz a propriedade "fonte". Quando um município tem malha complementar, ela
+substitui a do IBGE para aquele município.
+
+- São Paulo/SP: 96 distritos — Prefeitura de São Paulo, GeoSampa
+  (distrito_municipal_v2). https://geosampa.prefeitura.sp.gov.br/
+- Brasília/DF: 35 Regiões Administrativas — IPEDF, "Regiões Administrativas do
+  Distrito Federal em 2026". https://catalogo.ipe.df.gov.br/layers/geonode:regioes_administrativas
