@@ -7,6 +7,7 @@ Rodar localmente:
     pip install -r requirements.txt
     streamlit run app.py
 """
+import base64
 import hashlib
 import io
 from pathlib import Path
@@ -48,6 +49,7 @@ from analysis_config import (
 from report_pdf import _agora, build_pdf_report
 from estilo_planilha import estilizar_modelo, estilizar_relatorio
 import mapas
+import ilustracoes
 
 # O Streamlit Cloud atualiza os arquivos a cada push, mas mantém na memória
 # módulos já importados; se o mapas.py em memória for de uma versão anterior,
@@ -97,6 +99,43 @@ def _svg_data_uri(path):
 
 
 LOGO_SIDEBAR_URI = _svg_data_uri(LOGO_SIDEBAR_SVG)
+
+
+# Ícones autorais (ilustracoes.py) no lugar dos emojis: entram por CSS como
+# imagem de fundo de um ::before, porque rótulos de abas e botões do Streamlit
+# só aceitam texto.
+def _ico_uri(svg: str) -> str:
+    return "data:image/svg+xml;base64," + base64.b64encode(svg.encode()).decode()
+
+
+def _css_icones() -> str:
+    I = ilustracoes
+    base = ("content:''; display:inline-block; width:18px; height:18px; margin-right:8px; "
+            "vertical-align:-4px; background:no-repeat center/contain; ")
+    regras = []
+    abas = {"pj-abas-cfg": [I.ico_parasito, I.ico_microscopio, I.ico_pote, I.ico_criterios],
+            "pj-abas-rel": [I.ico_visao, I.ico_parasito, I.ico_microscopio, I.ico_paciente, I.ico_baixar]}
+    for chave, icones in abas.items():
+        for n, fn in enumerate(icones):
+            # duas marcações de aba, conforme a versão do Streamlit (div stTab novo / button antigo)
+            sel = (f'.st-key-{chave} [data-testid="stTab"][data-key="{n}"] p::before, '
+                   f'.st-key-{chave} button[role="tab"]:nth-of-type({n + 1}) p::before')
+            regras.append(f'{sel} {{ {base} background-image:url("{_ico_uri(fn())}"); }}')
+    # abas internas simples (Por município / Por bairro) ficam sem ícone
+    regras.append('.st-key-pj-abas-rel .st-key-pj-abas-simples [role="tab"] p::before '
+                  '{ content:none !important; display:none !important; }')
+    claro = _ico_uri(I.ico_baixar(PAPEL, PAPEL))
+    regras.append(f'.stDownloadButton button p::before {{ {base} width:17px; height:17px; '
+                  f'background-image:url("{claro}"); }}')
+    # botão claro da barra lateral: versão em verde/cobre
+    regras.append(f'[data-testid="stSidebar"] .stDownloadButton button p::before '
+                  f'{{ background-image:url("{_ico_uri(I.ico_baixar())}"); }}')
+    regras.append(f'.st-key-mapa_on [data-testid="stWidgetLabel"] p::before {{ {base} width:19px; height:19px; '
+                  f'background-image:url("{_ico_uri(I.ico_mapa())}"); }}')
+    return "\n".join(regras)
+
+
+CSS_ICONES = _css_icones()
 
 st.set_page_config(
     page_title="Pirajá · Painel de análise epidemiológica",
@@ -212,10 +251,48 @@ st.markdown(
         -webkit-mask-image: linear-gradient(to left, #000 15%, transparent 70%);
                 mask-image: linear-gradient(to left, #000 15%, transparent 70%);
     }}
-    .pj-hero .pj-hero-cluster {{
-        position: absolute; right: 34px; top: 26px; width: 120px; height: 90px; pointer-events: none;
+    .pj-hero {{
+        display: grid; grid-template-columns: minmax(0, 1fr) 200px; gap: 32px; align-items: center;
     }}
-    .pj-hero > *:not(.pj-hero-cluster) {{ position: relative; }}
+    .pj-hero > * {{ position: relative; }}
+    .pj-hero .pj-hero-ilu {{ width: 200px; height: 200px; display: block; }}
+
+    /* ----- como funciona (5 cartões ilustrados) ----- */
+    .pj-como .pj-eyebrow {{ margin: 2px 0 12px 0; }}
+    .pj-etapas {{ display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; }}
+    .pj-etapa {{
+        background: {SURFACE}; border: 1px solid {LINE}; border-radius: 14px; padding: 14px 16px 16px 16px;
+    }}
+    .pj-etapa .pj-ilu {{
+        width: 100%; height: auto; display: block; background: {PAPEL}; border-radius: 10px; margin-bottom: 12px;
+    }}
+    .pj-etapa .k {{
+        font-family: 'Instrument Sans', sans-serif; font-weight: 600; font-size: 11px; letter-spacing: .12em;
+        text-transform: uppercase; color: {INK_FAINT} !important;
+    }}
+    .pj-etapa .t {{
+        font-family: 'Fraunces', serif; font-weight: 600; font-size: 18px; color: {TEAL_DARK} !important;
+        margin: 3px 0 6px 0; line-height: 1.25;
+    }}
+    [data-testid="stMarkdownContainer"] .pj-etapa p {{
+        font-size: 13.5px; line-height: 1.5; color: {INK_SOFT} !important; margin: 0;
+    }}
+    .pj-nota-amostra {{
+        display: flex; gap: 10px; align-items: center; margin: 14px 0 22px 0;
+        font-size: 13.5px; color: {INK_SOFT} !important;
+    }}
+    .pj-nota-amostra svg {{ flex: 0 0 auto; }}
+    @media (max-width: 1100px) {{
+        .pj-etapas {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+        .pj-hero {{ grid-template-columns: minmax(0, 1fr); }}
+        .pj-hero .pj-hero-ilu {{ display: none; }}
+    }}
+    @media (max-width: 560px) {{
+        .pj-etapas {{ grid-template-columns: minmax(0, 1fr); }}
+        .pj-hero {{ padding: 26px 22px; }}
+        [data-testid="stMarkdownContainer"] .pj-hero h2 {{ font-size: 26px !important; }}
+    }}
+{CSS_ICONES}
     [data-testid="stMarkdownContainer"] .pj-hero .pj-eyebrow {{ color: {COBRE_CLARO} !important; }}
     [data-testid="stMarkdownContainer"] .pj-hero h2 * {{ color: {PAPEL} !important; }}
     [data-testid="stMarkdownContainer"] .pj-hero h2 {{
@@ -688,10 +765,10 @@ def painel_mapa(metrics: dict):
     nome_base = "mapa_prevalencia_" + niv + "_" + recorte + (
         "_" + mapas.chave(recorte_valor).replace(" ", "-").replace("/", "-") if recorte_valor else "")
     with d1:
-        st.download_button("⬇ Figura PNG (300 dpi)", data=png, file_name=f"{nome_base}.png", mime="image/png",
+        st.download_button("Figura PNG (300 dpi)", data=png, file_name=f"{nome_base}.png", mime="image/png",
                            width="stretch")
     with d2:
-        st.download_button("⬇ Figura TIFF (300 dpi)", data=tif, file_name=f"{nome_base}.tiff", mime="image/tiff",
+        st.download_button("Figura TIFF (300 dpi)", data=tif, file_name=f"{nome_base}.tiff", mime="image/tiff",
                            width="stretch")
 
 
@@ -738,9 +815,10 @@ def passo_configuracao(df: pd.DataFrame, file_bytes: bytes, file_name: str, cfg_
             st.warning(a)
 
         with st.form(f"pj-cfg-{ver}", border=False):
-            t_par, t_met, t_amo, t_cri = st.tabs(
-                ["🦠  Parasitos", "🔬  Métodos", "🧪  Amostras", "✅  Critérios de inclusão"]
-            )
+            with st.container(key="pj-abas-cfg"):
+                t_par, t_met, t_amo, t_cri = st.tabs(
+                    ["Parasitos", "Métodos", "Amostras", "Critérios de inclusão"]
+                )
             with t_par:
                 st.caption(
                     "Desmarque **Incluir** para deixar um parasito fora da análise (uma amostra que só "
@@ -889,7 +967,7 @@ def passo_configuracao(df: pd.DataFrame, file_bytes: bytes, file_name: str, cfg_
         d1, d2 = st.columns(2)
         with d1:
             st.download_button(
-                "⬇ Baixar só a configuração (.xlsx)",
+                "Baixar só a configuração (.xlsx)",
                 data=config_xlsx_bytes(ss["cfg_par"], ss["cfg_met"], ss["cfg_n"], ss["cfg_crit"]),
                 file_name=f"Configuracao_{base_nome}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -897,7 +975,7 @@ def passo_configuracao(df: pd.DataFrame, file_bytes: bytes, file_name: str, cfg_
             )
         with d2:
             st.download_button(
-                "⬇ Baixar minha planilha com a configuração",
+                "Baixar minha planilha com a configuração",
                 data=planilha_com_config_bytes(file_bytes, ss["cfg_par"], ss["cfg_met"], ss["cfg_n"], ss["cfg_crit"]),
                 file_name=f"{base_nome}_com_configuracao.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1116,7 +1194,7 @@ with st.sidebar:
 
     st.divider()
     st.download_button(
-        "⬇ Modelo (.xlsx)",
+        "Modelo (.xlsx)",
         data=TEMPLATE_BYTES,
         file_name="Modelo_Levantamento_Parasitoses.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1159,35 +1237,27 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Pequeno aglomerado de "positivos" em cobre claro sobre o padrão de pontos
-# do hero — o mesmo gesto do padrão "Campo" da identidade visual.
-HERO_CLUSTER_SVG = (
-    '<svg class="pj-hero-cluster" viewBox="0 0 120 90" xmlns="http://www.w3.org/2000/svg">'
-    + "".join(
-        f'<circle cx="{x}" cy="{y}" r="6" fill="{COBRE_CLARO}"/>'
-        for x, y in [(39, 13), (65, 13), (91, 13), (52, 39), (78, 39), (65, 65), (104, 65)]
-    )
-    + "</svg>"
-)
-
 # ==================================================================
-# HERO
+# HERO + COMO FUNCIONA (ilustrações autorais em ilustracoes.py)
 # ==================================================================
 st.markdown(
-    f"""<div class="pj-hero">
-    {HERO_CLUSTER_SVG}
-    <h2>Seus dados de coleta, transformados em relatório epidemiológico.</h2>
-    <p>Baixe o modelo de planilha e registre uma linha por coleta de cada paciente (P1, P2, P3…),
-    com o resultado de cada método. Ao enviar a planilha, você escolhe quais parasitos entram na
-    análise, classifica cada um como patogênico ou comensal e define os métodos e a quantidade de
-    amostras consideradas. O relatório mostra a prevalência por paciente, sempre separada entre
-    fezes e lâmina (Graham), considerando todos os parasitos e só os patogênicos, com intervalos
-    de confiança de 95%, comparação entre métodos e efeito do número de amostras. Amostras
-    insuficientes não entram no cálculo como negativas. Se a planilha trouxer o bairro e o município
-    onde cada paciente mora, o painel também mostra a prevalência por território e pode gerar mapas
-    por município e por bairro, no padrão cartográfico, prontos para artigo. No final, você baixa o
-    relatório em PDF e em Excel.</p>
-    </div>""",
+    '<div class="pj-hero"><div>'
+    "<h2>Seus dados de coleta, transformados em relatório epidemiológico.</h2>"
+    "<p>Envie a planilha da coleta e receba a prevalência de parasitos intestinais por paciente, "
+    "a comparação entre métodos, mapas por território e o relatório pronto em PDF e Excel.</p>"
+    "</div>" + ilustracoes.microscopio() + "</div>",
+    unsafe_allow_html=True,
+)
+st.markdown(
+    '<div class="pj-como"><div class="pj-eyebrow">Como funciona</div><div class="pj-etapas">'
+    + "".join(
+        f'<div class="pj-etapa">{fn()}<div class="k">{k}</div><div class="t">{t}</div><p>{d}</p></div>'
+        for k, t, d, fn in ilustracoes.ETAPAS
+    )
+    + '</div><div class="pj-nota-amostra"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">'
+    f'<circle cx="9" cy="9" r="6.5" fill="none" stroke="{INK_SOFT}" stroke-width="1.6" stroke-dasharray="2.4 2.4"/>'
+    "</svg><span>Amostras insuficientes nunca entram no cálculo como negativas: elas ficam fora do "
+    "denominador.</span></div></div>",
     unsafe_allow_html=True,
 )
 
@@ -1204,7 +1274,7 @@ with st.container(key="pj-step-1"):
         "não usa antes de enviar."
     )
     st.download_button(
-        "⬇ Baixar modelo (.xlsx)",
+        "Baixar modelo (.xlsx)",
         data=TEMPLATE_BYTES,
         file_name="Modelo_Levantamento_Parasitoses.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1333,9 +1403,10 @@ if uploaded_file is not None:
                     + len(metrics["lamina_inconclusivo"])
                 )
 
-                tab_geral, tab_especies, tab_metodos, tab_base, tab_export = st.tabs(
-                    ["📊  Visão geral", "🦠  Espécies & parasitos", "🔬  Métodos & amostragem", "📋  Base por paciente", "⬇  Exportar"]
-                )
+                with st.container(key="pj-abas-rel"):
+                    tab_geral, tab_especies, tab_metodos, tab_base, tab_export = st.tabs(
+                        ["Visão geral", "Espécies & parasitos", "Métodos & amostragem", "Base por paciente", "Exportar"]
+                    )
 
                 # ---------------------------------------------------------
                 # ABA 1 — VISÃO GERAL
@@ -1450,7 +1521,8 @@ if uploaded_file is not None:
 
                         tm = metrics["territorio_municipio"]
                         tb = metrics["territorio_bairro"]
-                        t_m, t_b = st.tabs(["Por município", "Por bairro"])
+                        with st.container(key="pj-abas-simples"):
+                            t_m, t_b = st.tabs(["Por município", "Por bairro"])
                         with t_m:
                             if tm.empty:
                                 st.info("Nenhum paciente com município preenchido.")
@@ -1486,7 +1558,7 @@ if uploaded_file is not None:
                         # ---- mapa (opcional) ----
                         st.write("")
                         gerar_mapa = st.toggle(
-                            "🗺️  Gerar mapa", key="mapa_on",
+                            "Gerar mapa", key="mapa_on",
                             help="Mapa de prevalência por município ou bairro de residência, no padrão "
                                  "cartográfico (para artigo) e interativo. Opcional.",
                         )
@@ -1888,7 +1960,7 @@ if uploaded_file is not None:
                     col_dl1, col_dl2 = st.columns(2)
                     with col_dl1:
                         st.download_button(
-                            "⬇ Baixar relatório em Excel",
+                            "Baixar relatório em Excel",
                             data=generate_report_excel_bytes(metrics),
                             file_name="Relatorio_Analise_Epidemiologica.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1896,7 +1968,7 @@ if uploaded_file is not None:
                         )
                     with col_dl2:
                         st.download_button(
-                            "⬇ Baixar relatório em PDF",
+                            "Baixar relatório em PDF",
                             data=build_pdf_report(
                                 metrics,
                                 logo_path=str(LOGO_PDF_PATH) if LOGO_PDF_PATH.exists() else None,
