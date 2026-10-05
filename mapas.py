@@ -427,6 +427,21 @@ def _inset(fig, rect, ufs_destaque, ext):
     _aspecto(ax, -15)
 
 
+LIMIAR_PONTOS_GRAUS = 4.0   # acima dessa extensão, municípios viram círculos proporcionais
+
+
+def usar_pontos(areas) -> bool:
+    """Áreas espalhadas por uma região grande (ex.: capitais de vários estados)
+    ficariam minúsculas como polígonos — nesse caso desenha-se um círculo por
+    área (cor = prevalência, tamanho = nº de pacientes) sobre os estados."""
+    minx, miny, maxx, maxy = areas.total_bounds
+    return max(maxx - minx, maxy - miny) > LIMIAR_PONTOS_GRAUS
+
+
+def _tam(n, nmax):
+    return 40 + 520 * (n / max(nmax, 1))
+
+
 def figura_estatica(areas, valor_col, titulo, rotulo_area, lims, contexto=None, sem_dados=None,
                     ufs_destaque=(), mostrar_rotulos=True, nota=""):
     """areas: GeoDataFrame com 'nome' e a coluna de valor. contexto: polígonos de
@@ -437,19 +452,34 @@ def figura_estatica(areas, valor_col, titulo, rotulo_area, lims, contexto=None, 
         fig = plt.figure(figsize=(7.6, 6.0), dpi=150, facecolor="white")
         ax = fig.add_axes([0.075, 0.085, 0.66, 0.83])
         ax.set_facecolor(FUNDO)
+        pontos = usar_pontos(areas)
         minx, miny, maxx, maxy = areas.total_bounds
-        pad = max(maxx - minx, maxy - miny) * 0.12 + 0.01
+        pad = max(maxx - minx, maxy - miny) * (0.18 if pontos else 0.12) + (1.0 if pontos else 0.01)
         ext = (minx - pad, miny - pad, maxx + pad, maxy + pad)
-        if contexto is not None and not contexto.empty:
-            contexto.cx[ext[0]:ext[2], ext[1]:ext[3]].plot(ax=ax, color="white", edgecolor=BORDA, linewidth=0.6)
-        if sem_dados is not None and not sem_dados.empty:
-            sem_dados.plot(ax=ax, color=SEM_DADO, edgecolor="white", linewidth=0.6)
-        areas.plot(ax=ax, column=valor_col, cmap=cmap, norm=norm, edgecolor="white", linewidth=0.9)
-        if mostrar_rotulos:
+        if pontos:
+            contorno_ufs().plot(ax=ax, color="white", edgecolor=BORDA, linewidth=0.6)
             pts = areas.geometry.representative_point()
-            for p, nome, v in zip(pts, areas["nome"], areas[valor_col]):
-                ax.text(p.x, p.y, f"{nome}\n{_br(v)}%", ha="center", va="center", fontsize=5.6, zorder=5,
-                        linespacing=1.1, color="white" if cor_de(v, lims) in RAMPA[2:] else TINTA)
+            nmax = areas["n_pacientes"].max()
+            ax.scatter(pts.x, pts.y, s=[_tam(n, nmax) for n in areas["n_pacientes"]],
+                       c=areas[valor_col], cmap=cmap, norm=norm, edgecolor=TINTA, linewidth=0.6, zorder=5)
+            if mostrar_rotulos:
+                for p, nome, v, n in zip(pts, areas["nome"], areas[valor_col], areas["n_pacientes"]):
+                    r = math.sqrt(_tam(n, nmax)) / 2
+                    ax.annotate(f"{nome} ({_br(v)}%)", (p.x, p.y), xytext=(r + 3, 0), textcoords="offset points",
+                                va="center", fontsize=5.8, color=TINTA, zorder=6,
+                                path_effects=[pe.withStroke(linewidth=2, foreground="white")])
+        else:
+            if contexto is not None and not contexto.empty:
+                contexto.cx[ext[0]:ext[2], ext[1]:ext[3]].plot(ax=ax, color="white", edgecolor=BORDA, linewidth=0.6)
+            if sem_dados is not None and not sem_dados.empty:
+                sem_dados.plot(ax=ax, color=SEM_DADO, edgecolor="white", linewidth=0.6)
+            areas.plot(ax=ax, column=valor_col, cmap=cmap, norm=norm, edgecolor="white", linewidth=0.9)
+            if mostrar_rotulos:
+                pts = areas.geometry.representative_point()
+                for p, nome, v in zip(pts, areas["nome"], areas[valor_col]):
+                    ax.text(p.x, p.y, f"{nome}\n{_br(v)}%", ha="center", va="center", fontsize=5.6, zorder=5,
+                            linespacing=1.1, color=TINTA,
+                            path_effects=[pe.withStroke(linewidth=2.2, foreground="white")])
         ax.set_xlim(ext[0], ext[2])
         ax.set_ylim(ext[1], ext[3])
         lat_c = (ext[1] + ext[3]) / 2
@@ -464,7 +494,18 @@ def figura_estatica(areas, valor_col, titulo, rotulo_area, lims, contexto=None, 
                         fontsize=6.8, title_fontsize=7.2, frameon=True, framealpha=0.95, edgecolor=LINHA,
                         borderpad=0.7, labelspacing=0.45, handlelength=1.4)
         leg._legend_box.align = "left"
-        _inset(fig, [0.765, 0.60, 0.2, 0.3], set(ufs_destaque), ext)
+        if pontos:
+            from matplotlib.lines import Line2D
+            nmax = areas["n_pacientes"].max()
+            refs = sorted({max(1, int(round(nmax * f))) for f in (0.25, 0.5, 1.0)})
+            ax.add_artist(leg)
+            hs = [Line2D([], [], marker="o", ls="", markerfacecolor="white", markeredgecolor=TINTA,
+                         markersize=math.sqrt(_tam(v, nmax)), label=str(v)) for v in refs]
+            leg2 = ax.legend(handles=hs, title="Pacientes (n)", loc="upper left", bbox_to_anchor=(1.06, 0.25),
+                             fontsize=6.8, title_fontsize=7.2, frameon=True, framealpha=0.95, edgecolor=LINHA,
+                             borderpad=0.9, labelspacing=1.3, handletextpad=1.2)
+        if max(ext[2] - ext[0], ext[3] - ext[1]) < 15:
+            _inset(fig, [0.765, 0.60, 0.2, 0.3], set(ufs_destaque), ext)
         fig.suptitle(titulo, x=0.075, ha="left", y=0.985, fontsize=10.5, color=MATA)
         rod = f"{SRC_TXT} · {FONTE_MALHA}" + (f" · {nota}" if nota else "")
         fig.text(0.5, 0.012, rod, ha="center", va="bottom", fontsize=6.0, color=TINTA_SUAVE)
@@ -496,9 +537,12 @@ def figura_interativa(areas, valor_col, rotulo_area, lims, contexto=None, sem_da
                       mostrar_rotulos=True, altura=620):
     import plotly.graph_objects as go
     fig = go.Figure()
+    pontos = usar_pontos(areas)
     minx, miny, maxx, maxy = areas.total_bounds
-    pad = max(maxx - minx, maxy - miny) * 0.12 + 0.01
+    pad = max(maxx - minx, maxy - miny) * (0.18 if pontos else 0.12) + (1.0 if pontos else 0.01)
     ext = (minx - pad, miny - pad, maxx + pad, maxy + pad)
+    if pontos:
+        contexto, sem_dados = contorno_ufs(), None
     if contexto is not None and not contexto.empty:
         for g in contexto.cx[ext[0]:ext[2], ext[1]:ext[3]].geometry:
             xs, ys = _aneis(g)
@@ -510,7 +554,7 @@ def figura_interativa(areas, valor_col, rotulo_area, lims, contexto=None, sem_da
             fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", fill="toself", fillcolor=SEM_DADO,
                                      line=dict(color="white", width=1), hoveron="fills", showlegend=False, name="",
                                      hovertemplate=f"<b>{r['nome']}</b><br>Sem dados<extra></extra>"))
-    for _, r in areas.iterrows():
+    for _, r in (areas.iloc[0:0] if pontos else areas).iterrows():
         xs, ys = _aneis(r.geometry)
         ic = ""
         if pd.notna(r.get("ic95_inf")) and pd.notna(r.get("ic95_sup")) and valor_col == "prevalencia":
@@ -520,13 +564,30 @@ def figura_interativa(areas, valor_col, rotulo_area, lims, contexto=None, sem_da
             line=dict(color="white", width=1.3), hoveron="fills", showlegend=False, name="",
             hovertemplate=(f"<b>{r['nome']}</b><br>{rotulo_area}<br>Pacientes: {int(r['n_pacientes'])}"
                            f"<br>Prevalência: <b>{_br(r[valor_col])}%</b>{ic}<extra></extra>")))
-    if mostrar_rotulos:
+    if pontos:
+        pts = areas.geometry.representative_point()
+        nmax = areas["n_pacientes"].max()
+
+        def _ic(r):
+            if pd.notna(r.get("ic95_inf")) and pd.notna(r.get("ic95_sup")) and valor_col == "prevalencia":
+                return f" (IC 95% {_br(r['ic95_inf'])}–{_br(r['ic95_sup'])}%)"
+            return ""
+        fig.add_trace(go.Scatter(
+            x=pts.x, y=pts.y, mode="markers+text" if mostrar_rotulos else "markers", showlegend=False,
+            text=[f"{n} ({_br(v)}%)" for n, v in zip(areas["nome"], areas[valor_col])], textposition="middle right",
+            textfont=dict(size=10, color=TINTA),
+            marker=dict(size=[math.sqrt(_tam(n, nmax)) * 1.35 for n in areas["n_pacientes"]],
+                        color=[cor_de(v, lims) for v in areas[valor_col]], line=dict(color=TINTA, width=0.8)),
+            hovertemplate=[f"<b>{r['nome']}</b><br>{rotulo_area}<br>Pacientes: {int(r['n_pacientes'])}"
+                           f"<br>Prevalência: <b>{_br(r[valor_col])}%</b>{_ic(r)}<extra></extra>"
+                           for _, r in areas.iterrows()],
+        ))
+    elif mostrar_rotulos:
         pts = areas.geometry.representative_point()
         fig.add_trace(go.Scatter(
             x=pts.x, y=pts.y, mode="text", hoverinfo="skip", showlegend=False,
             text=[f"{n}<br>{_br(v)}%" for n, v in zip(areas["nome"], areas[valor_col])],
-            textfont=dict(size=10, color=["white" if cor_de(v, lims) in RAMPA[2:] else TINTA
-                                          for v in areas[valor_col]])))
+            textfont=dict(size=10, color=TINTA, shadow="1px 1px 2px white, -1px -1px 2px white, 1px -1px 2px white, -1px 1px 2px white")))
     for c, r in zip(RAMPA, rotulos(lims)):
         fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", name=r,
                                  marker=dict(symbol="square", size=12, color=c, line=dict(color=TINTA_SUAVE, width=0.5))))
@@ -550,8 +611,18 @@ def figura_interativa(areas, valor_col, rotulo_area, lims, contexto=None, sem_da
 # ----------------------------------------------------------------------------
 # ponto de entrada usado pelo app
 # ----------------------------------------------------------------------------
+def municipios_com_bairro(metrics: dict) -> list[str]:
+    """'Município/UF' que têm pacientes com bairro, do maior para o menor."""
+    tb = metrics.get("territorio_bairro")
+    if tb is None or tb.empty:
+        return []
+    g = tb.assign(_r=tb["municipio"].astype(str) + "/" + tb["uf"].astype(str).str.upper()) \
+        .groupby("_r")["n_pacientes"].sum().sort_values(ascending=False)
+    return [r.rstrip("/") for r in g.index]
+
+
 def preparar_mapa(metrics: dict, nivel: str, indicador: str, modo_classes: str = "auto",
-                  limites=None, col_nome=None, mostrar_rotulos=None):
+                  limites=None, col_nome=None, mostrar_rotulos=None, municipio_foco: str | None = None):
     """Monta tudo o que a tela/PDF precisam. Devolve dict com 'ok', 'avisos',
     'fig_estatica', 'fig_interativa', 'titulo' — ou ok=False e 'erro'."""
     valor_col = "prevalencia" if indicador == "todos" else "prevalencia_patogenico"
@@ -577,6 +648,18 @@ def preparar_mapa(metrics: dict, nivel: str, indicador: str, modo_classes: str =
         tab_b = metrics.get("territorio_bairro")
         if tab_b is None or tab_b.empty:
             return {"ok": False, "erro": "Nenhum paciente com bairro preenchido.", "avisos": avisos}
+        if municipio_foco:
+            nome_f, _, uf_f = municipio_foco.partition("/")
+            sel = tab_b["municipio"].map(chave) == chave(nome_f)
+            if uf_f:
+                sel &= tab_b["uf"].astype(str).str.upper() == uf_f.upper()
+            tab_b = tab_b[sel]
+            if tab_b.empty:
+                return {"ok": False, "erro": f"Nenhum bairro com pacientes em {municipio_foco}.", "avisos": avisos}
+            # mapa de bairros é de uma cidade: o contexto é só a UF dela
+            if uf_f and municipios_uf(uf_f) is not None:
+                contexto = municipios_uf(uf_f)
+                ufs = {uf_f.upper()}
         if limites is None:
             # padrão: Malha de Bairros do Censo 2022 (IBGE)
             areas, sem, ufs_b, av = casar_bairros_ibge(tab_b)
@@ -597,14 +680,17 @@ def preparar_mapa(metrics: dict, nivel: str, indicador: str, modo_classes: str =
             fonte_bairros = "Bairros: arquivo de limites enviado pelo usuário"
         rot_area = "Bairro"
         munis = sorted(set(tab_b["municipio"].astype(str)) - {""})
-        titulo = f"Prevalência de {qual} por bairro de residência" + (f" — {', '.join(munis)}" if len(munis) <= 2 else "")
+        if municipio_foco:
+            titulo = f"Prevalência de {qual} por bairro de residência — {municipio_foco}"
+        else:
+            titulo = f"Prevalência de {qual} por bairro de residência" + (f" — {', '.join(munis)}" if len(munis) <= 2 else "")
         if not ufs:
             ufs = {str(u).upper() for u in tab_b["uf"] if str(u).strip()}
 
     nota = fonte_bairros if nivel != "municipio" else ""
     lims = classes(areas[valor_col], modo_classes)
     if mostrar_rotulos is None:
-        mostrar_rotulos = len(areas) <= 12
+        mostrar_rotulos = len(areas) <= 15
     pequenos = int((areas["n_pacientes"] < 10).sum())
     if pequenos:
         avisos.append(f"{pequenos} área(s) com menos de 10 pacientes: prevalência pouco precisa — "

@@ -569,7 +569,16 @@ def painel_mapa(metrics: dict):
         modo = st.radio("Classes de prevalência", ["Automáticas", "Fixas"], horizontal=True, key="mapa_cls",
                         help="Automáticas: 5 faixas de 5 em 5 pontos (ou mais largas) a partir dos dados. "
                              "Fixas: <10, 10–20, 20–40, 40–60, ≥60% — use para comparar estudos.")
-    limites, col_nome = None, None
+    limites, col_nome, foco = None, None, None
+    if nivel == "Bairro":
+        cidades = mapas.municipios_com_bairro(metrics)
+        if len(cidades) > 1:
+            foco = st.selectbox(
+                "Município do mapa de bairros", cidades, key="mapa_foco",
+                help="O mapa por bairro mostra uma cidade por vez (em ordem de nº de pacientes).",
+            )
+        elif cidades:
+            foco = cidades[0]
     if nivel == "Bairro":
         fonte_b = st.radio(
             "Limites dos bairros", ["Malha de bairros do IBGE (Censo 2022)", "Arquivo próprio (ex.: prefeitura)"],
@@ -599,8 +608,13 @@ def painel_mapa(metrics: dict):
         sug = mapas.coluna_nome_provavel(cols)
         col_nome = st.selectbox("Coluna com o nome do bairro no arquivo", cols,
                                 index=cols.index(sug) if sug in cols else 0, key="mapa_colnome")
-    n_areas = len(metrics["territorio_municipio" if nivel == "Município" else "territorio_bairro"])
-    rot = st.checkbox("Mostrar nome e valor dentro das áreas", value=n_areas <= 12, key=f"mapa_rot_{nivel}",
+    if nivel == "Município":
+        n_areas = len(metrics["territorio_municipio"])
+    else:
+        tb_ = metrics["territorio_bairro"]
+        n_areas = int((tb_["municipio"].astype(str) + "/" + tb_["uf"].astype(str).str.upper()).eq(foco or "").sum()) \
+            if foco else len(tb_)
+    rot = st.checkbox("Mostrar nome e valor dentro das áreas", value=n_areas <= 15, key=f"mapa_rot_{nivel}",
                       help="Com muitas áreas pequenas os rótulos se sobrepõem; os valores continuam ao "
                            "passar o mouse no mapa interativo.")
 
@@ -610,7 +624,7 @@ def painel_mapa(metrics: dict):
                 metrics, "municipio" if nivel == "Município" else "bairro",
                 "todos" if indicador == "Todos os parasitos" else "patogenicos",
                 modo_classes="fixas" if modo == "Fixas" else "auto",
-                limites=limites, col_nome=col_nome, mostrar_rotulos=rot,
+                limites=limites, col_nome=col_nome, mostrar_rotulos=rot, municipio_foco=foco,
             )
         except Exception as exc:  # noqa: BLE001
             st.error(f"Não foi possível gerar o mapa ({exc}).")

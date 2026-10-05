@@ -808,6 +808,14 @@ def prevalencia_territorio(base: pd.DataFrame, nivel: str) -> pd.DataFrame:
     d = base[base[nivel].astype(str).str.strip() != ""].copy()
     if d.empty:
         return vazio
+    # UF esquecida: completa pela UF dos outros pacientes do mesmo município,
+    # quando nos dados só existe uma UF para aquele nome de município
+    km = d["municipio"].map(_chave_territorio)
+    ufs_por_mun = d.assign(_km=km, _uf=d["uf"].astype(str).str.strip().str.upper()) \
+        .query("_uf != ''").groupby("_km")["_uf"].agg(lambda s: sorted(set(s)))
+    unica = {k: v[0] for k, v in ufs_por_mun.items() if len(v) == 1}
+    vazia = d["uf"].astype(str).str.strip() == ""
+    d.loc[vazia, "uf"] = [unica.get(k, "") for k in km[vazia]]
     d["_k"] = [" | ".join(_chave_territorio(r[c]) for c in cols) for _, r in d.iterrows()]
     d["_pat"] = d["positivo_fecal_patogenico"].astype(bool) | d["positivo_lamina_patogenico"].astype(bool)
     rows = []
