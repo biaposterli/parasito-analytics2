@@ -49,6 +49,13 @@ from report_pdf import _agora, build_pdf_report
 from estilo_planilha import estilizar_modelo, estilizar_relatorio
 import mapas
 
+# O Streamlit Cloud atualiza os arquivos a cada push, mas mantém na memória
+# módulos já importados; se o mapas.py em memória for de uma versão anterior,
+# recarrega para não quebrar com funções novas.
+if not hasattr(mapas, "opcoes_recorte"):
+    import importlib
+    mapas = importlib.reload(mapas)
+
 APP_DIR = Path(__file__).parent
 
 # ----------------------------------------------------------------
