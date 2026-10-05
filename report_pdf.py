@@ -583,6 +583,30 @@ def build_pdf_report(metrics: dict, logo_path: str | None = None, fuso: str | No
     cat_df.columns = ["Categoria", "Nº crianças", "%"]
     story.append(_df_table(cat_df, col_widths=[80 * mm, 35 * mm, 25 * mm]))
 
+    # ---- território (moradia do paciente), se a planilha tiver ----
+    if metrics.get("tem_territorio"):
+        story.append(Paragraph("Prevalência por território (moradia)", styles["h2"]))
+        story.append(Paragraph(
+            "Pacientes com resultado conclusivo, agrupados pelo bairro e município onde moram. Positivo = "
+            "qualquer parasito em qualquer tipo de amostra (mesma base da prevalência combinada).",
+            styles["body"],
+        ))
+        story.append(Spacer(1, 2 * mm))
+        for chave, nivel, cols, larg in (
+            ("territorio_municipio", "município", ["municipio", "uf"], [62 * mm, 14 * mm]),
+            ("territorio_bairro", "bairro", ["bairro", "municipio", "uf"], [44 * mm, 34 * mm, 12 * mm]),
+        ):
+            d = metrics.get(chave)
+            if d is None or d.empty:
+                continue
+            t = _with_ic_column(d)[cols + ["n_pacientes", "n_positivos", "prevalencia", "ic95"]]
+            t = t.rename(columns={"bairro": "Bairro", "municipio": "Município", "uf": "UF",
+                                  "n_pacientes": "Pacientes", "n_positivos": "Positivos",
+                                  "prevalencia": "Prevalência %", "ic95": "IC 95%"})
+            story.append(Paragraph(f"Por {nivel}", ParagraphStyle(
+                f"lp_terr_{nivel}", parent=styles["h2"], fontSize=11.5, spaceBefore=6, spaceAfter=4)))
+            story.append(_df_table(t, col_widths=larg + [18 * mm, 18 * mm, 22 * mm, 24 * mm]))
+
     # ---- prevalência de todos os parasitos (fecal + lâmina, unificado) ----
     story.append(Paragraph("Prevalência de todos os parasitos", styles["h2"]))
     story.append(Paragraph(

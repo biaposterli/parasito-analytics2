@@ -300,6 +300,10 @@ METHOD_COLUMNS = METHOD_CATALOG
 
 REQUIRED_COLUMNS = ["id_paciente", "coleta", "nome_paciente"]
 
+# Colunas OPCIONAIS de território (moradia do paciente) — usadas na prevalência
+# por bairro/município e, futuramente, no mapa. Não são métodos.
+TERRITORIO_COLS = ["bairro", "municipio", "uf"]
+
 ORDEM_COLETA = {"P1": 1, "P2": 2, "P3": 3}  # mantido por compatibilidade
 _COLETA_RE = re.compile(r"^P(\d+)$")
 
@@ -500,6 +504,10 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     # planilhas já preenchidas com o cabeçalho antigo continuam sendo lidas.
     if "nome_paciente" not in df.columns and "nome_crianca" in df.columns:
         df = df.rename(columns={"nome_crianca": "nome_paciente"})
+    # território: aceita variações de cabeçalho (com acento, "bairro_residencia"...)
+    aliases = {"município": "municipio", "cidade": "municipio", "bairro_residencia": "bairro",
+               "bairro_de_residencia": "bairro", "bairro_de_residência": "bairro", "estado": "uf"}
+    df = df.rename(columns={c: aliases[c] for c in df.columns if c in aliases and aliases[c] not in df.columns})
     return df
 
 
@@ -776,6 +784,48 @@ def cochran_armitage_trend(grupos: pd.DataFrame) -> dict:
     }
 
 
+def _chave_territorio(x) -> str:
+    """Chave de comparação de nomes de lugar: sem acento, minúsculas, espaços únicos."""
+    t = norm_text(x) or ""
+    t = "".join(c for c in unicodedata.normalize("NFD", t) if unicodedata.category(c) != "Mn")
+    return " ".join(t.lower().split())
+
+
+def prevalencia_territorio(base: pd.DataFrame, nivel: str) -> pd.DataFrame:
+    """Prevalência por município ou por bairro (moradia do paciente).
+
+    base: pacientes com resultado conclusivo (combinada_base). Positivo = qualquer
+    parasito em qualquer tipo de amostra (mesma definição da prevalência
+    combinada); também traz a positividade só de patogênicos. Nomes escritos com
+    acento/maiúsculas diferentes são juntados; mostra a grafia mais frequente.
+    Pacientes sem a informação do nível pedido ficam de fora (contados à parte).
+    """
+    cols = ["municipio", "uf"] if nivel == "municipio" else ["bairro", "municipio", "uf"]
+    vazio = pd.DataFrame(columns=cols + ["n_pacientes", "n_positivos", "prevalencia", "ic95_inf", "ic95_sup",
+                                         "n_positivos_patogenico", "prevalencia_patogenico"])
+    if base is None or base.empty or nivel not in base.columns:
+        return vazio
+    d = base[base[nivel].astype(str).str.strip() != ""].copy()
+    if d.empty:
+        return vazio
+    d["_k"] = [" | ".join(_chave_territorio(r[c]) for c in cols) for _, r in d.iterrows()]
+    d["_pat"] = d["positivo_fecal_patogenico"].astype(bool) | d["positivo_lamina_patogenico"].astype(bool)
+    rows = []
+    for k, g in d.groupby("_k"):
+        r = {c: g[c].astype(str).replace("", np.nan).dropna().mode().iloc[0] if g[c].astype(str).str.strip().ne("").any() else ""
+             for c in cols}
+        n = len(g)
+        pos = int(g["positivo_algum_metodo"].sum())
+        pat = int(g["_pat"].sum())
+        inf, sup = wilson_ci(pos, n)
+        r.update({"n_pacientes": n, "n_positivos": pos, "prevalencia": round(100 * pos / n, 1),
+                  "ic95_inf": inf, "ic95_sup": sup, "n_positivos_patogenico": pat,
+                  "prevalencia_patogenico": round(100 * pat / n, 1)})
+        rows.append(r)
+    out = pd.DataFrame(rows)
+    return out.sort_values(["n_pacientes", "prevalencia"], ascending=[False, False]).reset_index(drop=True)
+
+
 def build_per_child(df: pd.DataFrame, active_methods=None, cfg: "AnalysisConfig | None" = None) -> pd.DataFrame:
     """Constrói a base por criança.
 
@@ -853,6 +903,17 @@ def build_per_child(df: pd.DataFrame, active_methods=None, cfg: "AnalysisConfig 
         n_pote = len(pote_coletas)
         n_lamina = len(lamina_coletas)
 
+        # território (moradia): primeiro valor preenchido; marca se o paciente
+        # tem valores diferentes entre as linhas (P1, P2...)
+        territorio = {}
+        inconsistente = False
+        for tcol in TERRITORIO_COLS:
+            vals = [norm_text(v) for v in g[tcol]] if tcol in g.columns else []
+            vals = [v for v in vals if v]
+            territorio[tcol] = vals[0] if vals else ""
+            if len({_chave_territorio(v) for v in vals}) > 1:
+                inconsistente = True
+
         fecal_status = _reduce_status(fecal_instances)
         lamina_status = _reduce_status(lamina_instances)
         status_metodo = {nome_m: _reduce_status(v) for nome_m, v in instances_por_metodo.items()}
@@ -876,6 +937,10 @@ def build_per_child(df: pd.DataFrame, active_methods=None, cfg: "AnalysisConfig 
         row_out = {
             "id_paciente": id_paciente,
             "nome_paciente": nome,
+            "bairro": territorio["bairro"],
+            "municipio": territorio["municipio"],
+            "uf": territorio["uf"].upper(),
+            "territorio_inconsistente": inconsistente,
             "n_coletas_registradas": len(g),
             "n_coletas_pote_entregue": n_pote,
             "n_coletas_lamina_entregue": n_lamina,
@@ -923,7 +988,8 @@ def build_per_child(df: pd.DataFrame, active_methods=None, cfg: "AnalysisConfig 
         rows.append(row_out)
 
     base_cols = [
-        "id_paciente", "nome_paciente", "n_coletas_registradas",
+        "id_paciente", "nome_paciente", "bairro", "municipio", "uf", "territorio_inconsistente",
+        "n_coletas_registradas",
         "n_coletas_pote_entregue", "n_coletas_lamina_entregue", "categoria_amostragem",
         "participou_estudo", "fecal_status", "lamina_status", "positivo_fecal",
         "positivo_lamina", "positivo_algum_metodo", "especies_fecais", "especies_fecais_str",
@@ -1244,6 +1310,23 @@ def compute_metrics(df: pd.DataFrame, cfg: "AnalysisConfig | None" = None) -> di
     m["criterios"] = descrever_criterios(criterios, n_total) if criterios_ativos(criterios) else []
     m["excluidos_criterios"] = excluidos
     m["total_antes_criterios"] = int(total_antes)
+
+    # ---- território (bairro / município de moradia), se a planilha tiver
+    pp = m.get("por_paciente")
+    tem_territorio = pp is not None and not pp.empty and any(
+        c in df.columns for c in TERRITORIO_COLS) and (
+        pp[["bairro", "municipio"]].astype(str).apply(lambda s: s.str.strip() != "").any().any())
+    m["tem_territorio"] = bool(tem_territorio)
+    base = m.get("combinada_base")
+    m["territorio_municipio"] = prevalencia_territorio(base, "municipio") if tem_territorio else prevalencia_territorio(None, "municipio")
+    m["territorio_bairro"] = prevalencia_territorio(base, "bairro") if tem_territorio else prevalencia_territorio(None, "bairro")
+    if tem_territorio and base is not None and not base.empty:
+        m["territorio_sem_bairro"] = int((base["bairro"].astype(str).str.strip() == "").sum())
+        m["territorio_sem_municipio"] = int((base["municipio"].astype(str).str.strip() == "").sum())
+        m["territorio_inconsistentes"] = list(pp.loc[pp["territorio_inconsistente"].astype(bool), "id_paciente"])
+    else:
+        m["territorio_sem_bairro"] = m["territorio_sem_municipio"] = 0
+        m["territorio_inconsistentes"] = []
     return m
 
 

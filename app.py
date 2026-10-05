@@ -554,6 +554,7 @@ def bloco_dominio(titulo, caption, esp_df, n_base, n_pos, prev, ic, n_pat, prev_
 # colunas da planilha que nunca são método (não aparecem como opção no passo 03)
 COLUNAS_NAO_METODO = set(REQUIRED_COLUMNS) | {
     "nome_crianca", "nome_responsavel", "status_amostra", "status_lamina", "observacoes", "observacao",
+    "bairro", "municipio", "uf",
 }
 
 
@@ -783,7 +784,8 @@ def generate_template_bytes() -> bytes:
     metodo_cols_lamina = [col for col, _, _, dominio in METHOD_CATALOG if dominio == "lamina"]
 
     headers = (
-        ["id_paciente", "coleta", "nome_paciente", "nome_responsavel", "status_amostra", "status_lamina"]
+        ["id_paciente", "coleta", "nome_paciente", "nome_responsavel", "bairro", "municipio", "uf",
+         "status_amostra", "status_lamina"]
         + metodo_cols_lamina
         + metodo_cols_fecal
         + ["observacoes"]
@@ -792,7 +794,9 @@ def generate_template_bytes() -> bytes:
     def _linha(id_paciente, coleta, status_amostra, status_lamina, valores_metodo, observacoes):
         row = {
             "id_paciente": id_paciente, "coleta": coleta, "nome_paciente": "Exemplo Da Silva",
-            "nome_responsavel": "Nome Do Responsável", "status_amostra": status_amostra,
+            "nome_responsavel": "Nome Do Responsável",
+            "bairro": "Lagoa Nova" if id_paciente == "F-001" else "Felipe Camarão",
+            "municipio": "Natal", "uf": "RN", "status_amostra": status_amostra,
             "status_lamina": status_lamina, "observacoes": observacoes,
         }
         for col in metodo_cols_lamina + metodo_cols_fecal:
@@ -832,6 +836,11 @@ def generate_template_bytes() -> bytes:
         ["coleta", "Qual coleta essa linha representa", "P1, P2, P3 ... (quantas o estudo tiver)"],
         ["nome_paciente", "Nome da criança", "texto livre"],
         ["nome_responsavel", "Nome do responsável (opcional)", "texto livre ou vazio"],
+        ["bairro", "Bairro onde o paciente MORA (opcional — usado na prevalência por bairro e no mapa). "
+                   "Só o nome do bairro, nunca o endereço.", "texto, ex.: Lagoa Nova"],
+        ["municipio", "Município onde o paciente mora (opcional, mas necessário para o bairro: há bairros "
+                      "com o mesmo nome em cidades diferentes)", "texto, ex.: Natal"],
+        ["uf", "Sigla do estado do município (opcional)", "RN, PB, PE..."],
         ["status_amostra", "Status de entrega do POTE DE FEZES — usado pelos métodos fecais abaixo", "Entregue / Não entregue"],
         ["status_lamina", "Status de entrega da LÂMINA — usado pelo(s) método(s) de lâmina abaixo", "Entregue / Não entregue"],
     ]
@@ -896,6 +905,10 @@ def generate_template_bytes() -> bytes:
             "ser executado NESSA amostra (mesmo com o pote/lâmina entregue) — diferente de 'Amostra "
             "insuficiente', que é quando o método foi tentado mas não deu resultado. Uma célula "
             "'Não realizado' não entra em nenhum denominador do relatório para aquele método.\n\n"
+            "Território (opcional): preencha bairro, municipio e uf com o lugar onde o paciente MORA. "
+            "Com isso o relatório mostra a prevalência por bairro e por município (e, depois, o mapa). "
+            "Escreva o nome do bairro sempre do mesmo jeito; acentos e maiúsculas não importam. Não "
+            "coloque endereço.\n\n"
             "CONFIGURAÇÃO DA ANÁLISE (opcional) — abas Config_Parasitos, Config_Metodos, "
             "Config_Amostras e Config_Criterios: defina quais parasitos entram na análise (Incluir = Sim/Não), se cada "
             "um é Patogênico ou Comensal, quais métodos entram e se são de Fezes ou de Lâmina "
@@ -1266,6 +1279,61 @@ if uploaded_file is not None:
                     cat_df["%"] = (100 * cat_df["n_pacientes"] / metrics["total"]).round(1)
                     st.dataframe(cat_df, width='stretch')
 
+                    # ---- território (moradia do paciente) ----
+                    st.write("")
+                    if metrics.get("tem_territorio"):
+                        section_title(
+                            "Prevalência por território (moradia)",
+                            "Pacientes com resultado conclusivo, agrupados pelo bairro e município onde moram. "
+                            "Positivo = qualquer parasito em qualquer tipo de amostra (mesma base da "
+                            "prevalência combinada). IC95% pelo método de Wilson.",
+                        )
+
+                        def _tab_territorio(d, nivel):
+                            cols = ["municipio", "uf"] if nivel == "municipio" else ["bairro", "municipio", "uf"]
+                            t = with_ic_column(d)[cols + ["n_pacientes", "n_positivos", "prevalencia", "IC 95%",
+                                                         "prevalencia_patogenico"]]
+                            return t.rename(columns={
+                                "bairro": "Bairro", "municipio": "Município", "uf": "UF", "n_pacientes": "Pacientes",
+                                "n_positivos": "Positivos", "prevalencia": "Prevalência %",
+                                "prevalencia_patogenico": "Só patogênicos %",
+                            })
+
+                        tm = metrics["territorio_municipio"]
+                        tb = metrics["territorio_bairro"]
+                        t_m, t_b = st.tabs(["Por município", "Por bairro"])
+                        with t_m:
+                            if tm.empty:
+                                st.info("Nenhum paciente com município preenchido.")
+                            else:
+                                st.dataframe(_tab_territorio(tm, "municipio"), width="stretch", hide_index=True)
+                        with t_b:
+                            if tb.empty:
+                                st.info("Nenhum paciente com bairro preenchido.")
+                            else:
+                                st.dataframe(_tab_territorio(tb, "bairro"), width="stretch", hide_index=True)
+                                pequenos = int((tb["n_pacientes"] < 10).sum())
+                                if pequenos:
+                                    st.caption(
+                                        f"{pequenos} bairro(s) com menos de 10 pacientes: a prevalência desses "
+                                        "bairros é pouco precisa (veja a largura do IC95%)."
+                                    )
+                        avisos_t = []
+                        if metrics["territorio_sem_bairro"]:
+                            avisos_t.append(f"{metrics['territorio_sem_bairro']} paciente(s) sem bairro preenchido "
+                                            "ficaram fora da tabela por bairro")
+                        if metrics["territorio_sem_municipio"]:
+                            avisos_t.append(f"{metrics['territorio_sem_municipio']} sem município ficaram fora da "
+                                            "tabela por município")
+                        inc = metrics["territorio_inconsistentes"]
+                        if inc:
+                            avisos_t.append(
+                                f"{len(inc)} paciente(s) com bairro/município diferentes entre as coletas — foi "
+                                f"usado o da primeira linha ({', '.join(map(str, inc[:10]))}"
+                                + ("…" if len(inc) > 10 else "") + ")")
+                        if avisos_t:
+                            st.caption("Atenção: " + "; ".join(avisos_t) + ".")
+
                 # ---------------------------------------------------------
                 # ABA 2 — ESPÉCIES & PARASITOS
                 # ---------------------------------------------------------
@@ -1617,6 +1685,11 @@ if uploaded_file is not None:
                             "p_valor": ca["p_valor"],
                             "aviso": ca["aviso"],
                         }]).to_excel(writer, sheet_name="CochranArmitage_NPotes", index=False)
+                        if m.get("tem_territorio"):
+                            if not m["territorio_municipio"].empty:
+                                m["territorio_municipio"].to_excel(writer, sheet_name="Prevalencia_Municipio", index=False)
+                            if not m["territorio_bairro"].empty:
+                                m["territorio_bairro"].to_excel(writer, sheet_name="Prevalencia_Bairro", index=False)
                         exc = m.get("excluidos_criterios")
                         if exc is not None and len(exc):
                             exc.rename(columns={"id_paciente": "id_paciente", "nome_paciente": "nome_paciente",

@@ -39,6 +39,10 @@ BORDA = Border(left=_fino, right=_fino, top=_fino, bottom=_fino)
 BORDA_BAIXO = Border(bottom=_fino)
 
 
+UFS = ["AC", "AL", "AM", "AP", "BA", "CE", "DF", "ES", "GO", "MA", "MG", "MS", "MT", "PA", "PB", "PE",
+       "PI", "PR", "RJ", "RN", "RO", "RR", "RS", "SC", "SE", "SP", "TO"]
+
+
 def _fill(cor):
     return PatternFill("solid", start_color=cor, end_color=cor)
 
@@ -152,6 +156,7 @@ def _dados(ws, colunas_lamina=()):
         largura = 30 if nome.startswith("metodo_") else {"id_paciente": 14, "coleta": 10,
                                                          "nome_paciente": 24, "nome_responsavel": 24,
                                                          "status_amostra": 17, "status_lamina": 17,
+                                                         "bairro": 22, "municipio": 20, "uf": 7,
                                                          "observacoes": 46}.get(nome, 18)
         ws.column_dimensions[get_column_letter(i)].width = largura
 
@@ -174,6 +179,8 @@ def _dados(ws, colunas_lamina=()):
         if campo in col:
             _lista(ws, ["Entregue", "Não entregue"], f"{col[campo]}2:{col[campo]}2000",
                    "Status", "Valores esperados: Entregue ou Não entregue.")
+    if "uf" in col:
+        _lista(ws, UFS, f"{col['uf']}2:{col['uf']}5000", "UF", "Use a sigla do estado (ex.: RN).")
     if "coleta" in col:
         _lista(ws, [f"P{i}" for i in range(1, 7)], f"{col['coleta']}2:{col['coleta']}2000",
                "Coleta", "Use P1, P2, P3… para identificar a coleta.")
@@ -305,6 +312,8 @@ DESCRICAO_ABAS = {
     "Curva_Cumulativa_Fecal": "Prevalência acumulada a cada nova coleta de fezes.",
     "McNemar_HPJ_x_Willis": "Teste de McNemar comparando HPJ e Willis nos mesmos pacientes.",
     "CochranArmitage_NPotes": "Teste de tendência de Cochran-Armitage para o número de coletas.",
+    "Prevalencia_Municipio": "Prevalência por município de moradia, com IC 95%.",
+    "Prevalencia_Bairro": "Prevalência por bairro de moradia, com IC 95%.",
     "Config_Parasitos": "Configuração usada: parasitos incluídos e classificação.",
     "Config_Metodos": "Configuração usada: métodos incluídos e tipo de amostra.",
     "Config_Amostras": "Configuração usada: número de amostras por paciente.",
