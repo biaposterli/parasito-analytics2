@@ -518,6 +518,240 @@ def _aneis(geom):
 # ----------------------------------------------------------------------------
 # figura estática (padrão cartográfico)
 # ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
+# etiquetas sem sobreposição
+# ----------------------------------------------------------------------------
+def _sobrepoe(a, b, folga=1.5):
+    return not (a[2] + folga <= b[0] or b[2] + folga <= a[0] or a[3] + folga <= b[1] or b[3] + folga <= a[1])
+
+
+def _linha_cruza(p0, p1, caixa, passos=24):
+    for k in range(1, passos):
+        t = k / passos
+        x, y = p0[0] + (p1[0] - p0[0]) * t, p0[1] + (p1[1] - p0[1]) * t
+        if caixa[0] <= x <= caixa[2] and caixa[1] <= y <= caixa[3]:
+            return True
+    return False
+
+
+def _segs_cruzam(a, b, c, d):
+    def o(p, q, r):
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+    return (o(a, b, c) * o(a, b, d) < 0) and (o(c, d, a) * o(c, d, b) < 0)
+
+
+def _borda_caixa(p, caixa, gap=1.5):
+    """Ponto da borda da caixa na direção de p (a linha de chamada para antes do texto)."""
+    cx, cy = (caixa[0] + caixa[2]) / 2, (caixa[1] + caixa[3]) / 2
+    dx, dy = p[0] - cx, p[1] - cy
+    hw, hh = (caixa[2] - caixa[0]) / 2 + gap, (caixa[3] - caixa[1]) / 2 + gap
+    if dx == 0 and dy == 0:
+        return cx, cy
+    t = min(hw / abs(dx) if dx else 1e9, hh / abs(dy) if dy else 1e9)
+    return cx + dx * t, cy + dy * t
+
+
+def _posicionar_rotulos(fig, ax, itens, raio_px=None, pontos=False, fonte=5.6):
+    """Coloca as etiquetas sem sobreposição, em três níveis:
+    1) dentro da área (ou ao lado do círculo), deslocando um pouco se preciso;
+    2) fora, num espaço livre próximo, com linha de chamada (para fora do aglomerado);
+    3) se nada couber, um número na área e o nome numa lista ao lado do mapa.
+    itens: lista de dict(nome, valor, x, y, geom, prioridade). Devolve cópias com
+    'modo' ('dentro' | 'chamada' | 'numero'), 'texto', 'lx', 'ly' (dados), 'linha' e 'num'."""
+    from shapely.geometry import Point
+    fig.canvas.draw()
+    rend = fig.canvas.get_renderer()
+    T = ax.transData
+    inv = T.inverted()
+    axb = ax.get_window_extent(rend)
+    lim = (axb.x0 + 3, axb.y0 + 3, axb.x1 - 3, axb.y1 - 3)
+    W, H = axb.width, axb.height
+    # obstáculos fixos: seta do norte (alto à direita) e barra de escala (baixo à esquerda)
+    fixos = [(axb.x0 + 0.885 * W, axb.y0 + 0.83 * H, axb.x1, axb.y1),
+             (axb.x0, axb.y0, axb.x0 + 0.36 * W, axb.y0 + 0.13 * H)]
+    caixas = []      # etiquetas já colocadas
+    linhas = []      # linhas de chamada já desenhadas
+    anc = {i: tuple(T.transform((it["x"], it["y"]))) for i, it in enumerate(itens)}
+    raio = raio_px or {i: 4.0 for i in anc}
+    obst_anc = {i: (x - raio[i], y - raio[i], x + raio[i], y + raio[i]) for i, (x, y) in anc.items()}
+    cx0 = sum(x for x, _ in anc.values()) / max(len(anc), 1)
+    cy0 = sum(y for _, y in anc.values()) / max(len(anc), 1)
+
+    def medida(txt):
+        t = ax.text(0, 0, txt, fontsize=fonte, linespacing=1.1, ha="center", va="center")
+        bb = t.get_window_extent(rend)
+        t.remove()
+        return bb.width + 3, bb.height + 2
+
+    def livre(caixa, i, linha_de=None):
+        if caixa[0] < lim[0] or caixa[1] < lim[1] or caixa[2] > lim[2] or caixa[3] > lim[3]:
+            return False
+        if any(_sobrepoe(caixa, o) for o in fixos + caixas):
+            return False
+        # não cobre o ponto/círculo de outra área (no modo áreas, nem o próprio fica de fora: a
+        # etiqueta centrada nele é o caso normal, então i == -1 libera só esse)
+        if any(_sobrepoe(caixa, o, 0.5) for j, o in obst_anc.items() if j != i):
+            return False
+        if any(_linha_cruza(a, b, caixa) for a, b in linhas):
+            return False
+        if linha_de is not None:
+            p1 = _borda_caixa(linha_de, caixa)
+            if any(_linha_cruza(linha_de, p1, o) for o in caixas):
+                return False
+            if any(_segs_cruzam(linha_de, p1, a, b) for a, b in linhas):
+                return False
+            if any(_linha_cruza(linha_de, p1, o) for j, o in obst_anc.items() if j != i):
+                return False
+        return True
+
+    ordem = sorted(range(len(itens)), key=lambda i: -itens[i]["prioridade"])
+    res = [dict(it) for it in itens]
+    numerados = []
+    for i in ordem:
+        it = res[i]
+        ax_, ay_ = anc[i]
+        txt = f"{it['nome']} ({_br(it['valor'])}%)" if pontos else f"{it['nome']}\n{_br(it['valor'])}%"
+        w, h = medida(txt)
+        it["texto"] = txt
+        feito = False
+        # 1) dentro da área / ao lado do círculo
+        if pontos:
+            r = raio[i]
+            cands = [(ax_ + r + 3 + w / 2, ay_), (ax_ - r - 3 - w / 2, ay_),
+                     (ax_, ay_ + r + 2 + h / 2), (ax_, ay_ - r - 2 - h / 2)]
+        else:
+            cands = [(ax_, ay_)] + [(ax_ + dx * w, ay_ + dy * h) for dx, dy in
+                                    [(0, .55), (0, -.55), (.3, 0), (-.3, 0), (.3, .5), (-.3, .5), (.3, -.5), (-.3, -.5)]]
+        for ccx, ccy in cands:
+            caixa = (ccx - w / 2, ccy - h / 2, ccx + w / 2, ccy + h / 2)
+            if not pontos and (ccx, ccy) != (ax_, ay_):
+                gx, gy = inv.transform((ccx, ccy))
+                if it.get("geom") is None or not it["geom"].contains(Point(gx, gy)):
+                    continue
+            if livre(caixa, i if pontos else i):
+                it.update(modo="dentro", caixa=caixa)
+                feito = True
+                break
+        # 2) fora, com linha de chamada, preferindo a direção "para fora" do aglomerado
+        if not feito:
+            ox, oy = ax_ - cx0, ay_ - cy0
+            ang_fora = math.atan2(oy, ox) if (abs(ox) + abs(oy)) > 1 else math.pi / 2
+            base = max(h * 1.1, 12) + raio[i]
+            d_max = 0.2 * max(W, H) + raio[i]   # linha de chamada longa demais confunde: vira número
+            angs = sorted((k * math.pi / 8 for k in range(16)),
+                          key=lambda a: abs(math.atan2(math.sin(a - ang_fora), math.cos(a - ang_fora))))
+            for mult in (1.0, 1.6, 2.3, 3.2, 4.3, 5.6, 7.2):
+                if base * mult > d_max:
+                    break
+                for a in angs:
+                    d = base * mult
+                    ccx = ax_ + math.cos(a) * (d + w / 2 * abs(math.cos(a)))
+                    ccy = ay_ + math.sin(a) * (d + h / 2 * abs(math.sin(a)))
+                    caixa = (ccx - w / 2, ccy - h / 2, ccx + w / 2, ccy + h / 2)
+                    if livre(caixa, i, linha_de=(ax_, ay_)):
+                        it.update(modo="chamada", caixa=caixa)
+                        feito = True
+                        break
+                if feito:
+                    break
+        if feito:
+            caixas.append(it["caixa"])
+            c = it["caixa"]
+            if it["modo"] == "chamada":
+                p1 = _borda_caixa((ax_, ay_), c)
+                linhas.append(((ax_, ay_), p1))
+                it["linha"] = (tuple(inv.transform((ax_, ay_))), tuple(inv.transform(p1)))
+            it["lx"], it["ly"] = inv.transform(((c[0] + c[2]) / 2, (c[1] + c[3]) / 2))
+        else:
+            it["modo"] = "numero"
+            numerados.append(i)
+    # 3) numeração em ordem de leitura (de cima para baixo, da esquerda para a direita); o
+    #    número também procura lugar livre (se não couber sobre a área, sai com linha curta)
+    lado = fonte * fig.dpi / 72 * 1.25 + 2
+    for n, i in enumerate(sorted(numerados, key=lambda i: (-round(anc[i][1] / 20), anc[i][0])), 1):
+        it = res[i]
+        it["num"] = n
+        ax_, ay_ = anc[i]
+        ox, oy = ax_ - cx0, ay_ - cy0
+        ang_fora = math.atan2(oy, ox) if (abs(ox) + abs(oy)) > 1 else math.pi / 2
+        angs = sorted((k * math.pi / 8 for k in range(16)),
+                      key=lambda a: abs(math.atan2(math.sin(a - ang_fora), math.cos(a - ang_fora))))
+        achado = None
+        for d in (0, 1.3, 2.0, 2.8, 3.8, 5.0):
+            for a in ([0] if d == 0 else angs):
+                ccx = ax_ + math.cos(a) * (d * lado + (raio[i] if d else 0))
+                ccy = ay_ + math.sin(a) * (d * lado + (raio[i] if d else 0))
+                caixa = (ccx - lado / 2, ccy - lado / 2, ccx + lado / 2, ccy + lado / 2)
+                if livre(caixa, i, linha_de=None if d == 0 else (ax_, ay_)):
+                    achado = (caixa, d)
+                    break
+            if achado:
+                break
+        if achado is None:
+            achado = ((ax_ - lado / 2, ay_ - lado / 2, ax_ + lado / 2, ay_ + lado / 2), 0)
+        c, d = achado
+        caixas.append(c)
+        ncx, ncy = (c[0] + c[2]) / 2, (c[1] + c[3]) / 2
+        it["nx"], it["ny"] = inv.transform((ncx, ncy))
+        if d:
+            p1 = _borda_caixa((ax_, ay_), c, gap=0.5)
+            linhas.append(((ax_, ay_), p1))
+            it["linha"] = (tuple(inv.transform((ax_, ay_))), tuple(inv.transform(p1)))
+    # 4) no modo círculos a lateral está ocupada pelas legendas: a lista de numerados vai
+    #    para um canto livre dentro do mapa (alto à esquerda ou baixo à direita)
+    info = {"lista_ax": None}
+    if numerados and pontos:
+        linhas_txt = sum(1 for _ in numerados) + 1
+        larg = max(medida(f"{res[i]['nome']} ({_br(res[i]['valor'])}%)")[0] for i in numerados) + 14
+        alt = linhas_txt * fonte * fig.dpi / 72 * 1.45 + 8
+        cantos = {"sup_esq": (axb.x0 + 6, axb.y1 - 6 - alt, axb.x0 + 6 + larg, axb.y1 - 6),
+                  "inf_dir": (axb.x1 - 6 - larg, axb.y0 + 6, axb.x1 - 6, axb.y0 + 6 + alt),
+                  "inf_esq": (axb.x0 + 6, axb.y0 + 0.14 * H, axb.x0 + 6 + larg, axb.y0 + 0.14 * H + alt)}
+
+        def custo(c):
+            return (sum(_sobrepoe(c, o, 0) for o in caixas) * 3
+                    + sum(_sobrepoe(c, o, 0) for o in obst_anc.values()))
+        nome_c, c = min(cantos.items(), key=lambda kv: custo(kv[1]))
+        info["lista_ax"] = ((c[0] - axb.x0) / W, (c[3] - axb.y0) / H)
+    return res, info
+
+
+def _desenhar_rotulos(ax, fig, res, info=None, fonte=5.6, topo=0.335):
+    halo = [pe.withStroke(linewidth=2.2, foreground="white")]
+    lista = []
+    for it in res:
+        if it["modo"] in ("dentro", "chamada"):
+            if it["modo"] == "chamada":
+                (x0, y0), (x1, y1) = it["linha"]
+                ax.plot([x0, x1], [y0, y1], color=TINTA, lw=0.45, zorder=6, solid_capstyle="round")
+                ax.plot([x0], [y0], "o", ms=1.9, color=TINTA, zorder=7)
+            ax.text(it["lx"], it["ly"], it["texto"], ha="center", va="center", fontsize=fonte, zorder=8,
+                    linespacing=1.1, color=TINTA, path_effects=halo)
+        elif it.get("num"):
+            if it.get("linha"):
+                (x0, y0), (x1, y1) = it["linha"]
+                ax.plot([x0, x1], [y0, y1], color=TINTA, lw=0.45, zorder=6, solid_capstyle="round")
+                ax.plot([x0], [y0], "o", ms=1.9, color=TINTA, zorder=7)
+            ax.text(it.get("nx", it["x"]), it.get("ny", it["y"]), str(it["num"]), ha="center", va="center", fontsize=fonte - 0.6, zorder=8,
+                    color=TINTA, bbox=dict(boxstyle="circle,pad=0.2", facecolor="white", edgecolor=TINTA, lw=0.45))
+            lista.append((it["num"], f"{it['num']}  {it['nome']} ({_br(it['valor'])}%)"))
+    if lista and info and info.get("lista_ax"):
+        lista.sort()
+        x, y = info["lista_ax"]
+        ax.text(x, y, "Áreas numeradas\n" + "\n".join(t for _, t in lista), transform=ax.transAxes,
+                ha="left", va="top", fontsize=fonte, color=TINTA, linespacing=1.35, zorder=9,
+                bbox=dict(boxstyle="round,pad=0.5", facecolor="white", edgecolor=LINHA, lw=0.6, alpha=0.95))
+    elif lista:
+        lista.sort()
+        linhas = [t for _, t in lista]
+        ncol = 1 if len(linhas) <= 12 else 2
+        por = math.ceil(len(linhas) / ncol)
+        fig.text(0.765, topo, "Áreas numeradas", ha="left", va="top", fontsize=6.4, color=TINTA)
+        for c in range(ncol):
+            fig.text(0.765 + c * 0.115, topo - 0.025, "\n".join(linhas[c * por:(c + 1) * por]), ha="left", va="top",
+                     fontsize=5.6 if ncol == 1 else 4.9, color=TINTA, linespacing=1.35)
+
+
 def figura_estatica(cena: dict):
     """cena: dict montado por preparar_mapa (áreas, camadas de fundo, extensão,
     classes, estilo, títulos)."""
@@ -542,21 +776,11 @@ def figura_estatica(cena: dict):
             nmax = areas["n_pacientes"].max()
             ax.scatter(pts.x, pts.y, s=[_tam(n, nmax) for n in areas["n_pacientes"]],
                        c=areas[valor_col], cmap=cmap, norm=norm, edgecolor=TINTA, linewidth=0.6, zorder=5)
-            if rotulos_on:
-                for p, nome, v, n in zip(pts, areas["nome"], areas[valor_col], areas["n_pacientes"]):
-                    r = math.sqrt(_tam(n, nmax)) / 2
-                    ax.annotate(f"{nome} ({_br(v)}%)", (p.x, p.y), xytext=(r + 3, 0), textcoords="offset points",
-                                va="center", fontsize=5.8, color=TINTA, zorder=6,
-                                path_effects=[pe.withStroke(linewidth=2, foreground="white")])
         else:
             # áreas pequenas demais para a escala ganham um contorno fino escuro, para não sumirem
             borda = TINTA if cena["recorte"] in ("brasil", "regiao") else "white"
             areas.plot(ax=ax, column=valor_col, cmap=cmap, norm=norm, edgecolor=borda,
                        linewidth=0.35 if borda == TINTA else 0.9, zorder=4)
-            if rotulos_on:
-                for p, nome, v in zip(areas.geometry.representative_point(), areas["nome"], areas[valor_col]):
-                    ax.text(p.x, p.y, f"{nome}\n{_br(v)}%", ha="center", va="center", fontsize=5.6, zorder=5,
-                            linespacing=1.1, color=TINTA, path_effects=[pe.withStroke(linewidth=2.2, foreground="white")])
         ax.set_xlim(ext[0], ext[2])
         ax.set_ylim(ext[1], ext[3])
         lat_c = (ext[1] + ext[3]) / 2
@@ -583,6 +807,20 @@ def figura_estatica(cena: dict):
                       borderpad=0.9, labelspacing=1.3, handletextpad=1.2)
         if cena["recorte"] != "brasil":
             _inset(fig, [0.765, 0.60, 0.2, 0.3], set(cena["ufs_destaque"]), ext)
+        cena["rotulos_pos"] = None
+        if rotulos_on and len(areas):
+            pts = areas.geometry.representative_point()
+            itens = [dict(nome=nm, valor=v, x=p.x, y=p.y, geom=g, prioridade=(n if pontos else g.area))
+                     for nm, v, p, g, n in zip(areas["nome"], areas[valor_col], pts, areas.geometry,
+                                               areas["n_pacientes"])]
+            raio = None
+            if pontos:
+                nmax = areas["n_pacientes"].max()
+                esc = fig.dpi / 72
+                raio = {i: math.sqrt(_tam(n, nmax)) / 2 * esc for i, n in enumerate(areas["n_pacientes"])}
+            res, info = _posicionar_rotulos(fig, ax, itens, raio, pontos=pontos)
+            _desenhar_rotulos(ax, fig, res, info)
+            cena["rotulos_pos"] = res
         fig.suptitle(cena["titulo"], x=0.075, ha="left", y=0.985, fontsize=10.5, color=MATA)
         rod = f"{SRC_TXT} · {FONTE_MALHA}" + (f" · {cena['nota']}" if cena.get("nota") else "")
         fig.text(0.5, 0.012, rod, ha="center", va="bottom", fontsize=6.0, color=TINTA_SUAVE)
@@ -605,6 +843,43 @@ def _camada_unica(fig, gdf, cor, borda, larg):
                                  line=dict(color=borda, width=larg), hoverinfo="skip", showlegend=False))
 
 
+def _rotulos_interativos(fig, pos, pontos):
+    """Etiquetas do mapa interativo nas mesmas posições calculadas para a figura estática
+    (sem sobreposição): texto, linhas de chamada e números com a lista no canto."""
+    import plotly.graph_objects as go
+    lx, ly = [], []
+    dots_x, dots_y = [], []
+    lista = []
+    for it in pos:
+        if it.get("linha"):
+            (x0, y0), (x1, y1) = it["linha"]
+            lx += [x0, x1, None]
+            ly += [y0, y1, None]
+            dots_x.append(x0)
+            dots_y.append(y0)
+    if lx:
+        fig.add_trace(go.Scatter(x=lx, y=ly, mode="lines", line=dict(color=TINTA, width=0.8),
+                                 hoverinfo="skip", showlegend=False))
+        fig.add_trace(go.Scatter(x=dots_x, y=dots_y, mode="markers", marker=dict(size=4, color=TINTA),
+                                 hoverinfo="skip", showlegend=False))
+    for it in pos:
+        if it["modo"] in ("dentro", "chamada"):
+            txt = it["texto"].replace("\n", "<br>")
+            fig.add_annotation(x=it["lx"], y=it["ly"], text=txt, showarrow=False, font=dict(size=9, color=TINTA),
+                               bgcolor="rgba(255,255,255,.6)", borderpad=0)
+        elif it.get("num"):
+            fig.add_annotation(x=it.get("nx", it["x"]), y=it.get("ny", it["y"]), text=f"<b>{it['num']}</b>",
+                               showarrow=False, font=dict(size=9, color=TINTA), bgcolor="white",
+                               bordercolor=TINTA, borderwidth=0.8, borderpad=2)
+            lista.append((it["num"], f"{it['num']}  {it['nome']} ({_br(it['valor'])}%)"))
+    if lista:
+        lista.sort()
+        fig.add_annotation(x=0.01, y=0.99, xref="paper", yref="paper", xanchor="left", yanchor="top", align="left",
+                           showarrow=False, text="<b>Áreas numeradas</b><br>" + "<br>".join(t for _, t in lista),
+                           font=dict(size=10, color=TINTA), bgcolor="rgba(255,255,255,.92)", bordercolor=LINHA,
+                           borderwidth=1, borderpad=6)
+
+
 def figura_interativa(cena: dict, altura=620):
     import plotly.graph_objects as go
     areas, valor_col, lims = cena["areas"], cena["valor_col"], cena["lims"]
@@ -618,6 +893,7 @@ def figura_interativa(cena: dict, altura=620):
             fig.add_trace(go.Scatter(x=x, y=y, mode="lines", line=dict(color="#8F8A80", width=1),
                                      hoverinfo="skip", showlegend=False))
     sem = cena.get("sem_dados")
+    pos = cena.get("rotulos_pos") if rotulos_on else None
     if sem is not None and not sem.empty:
         _camada_unica(fig, sem, SEM_DADO, "white", 0.8)
 
@@ -634,7 +910,7 @@ def figura_interativa(cena: dict, altura=620):
         pts = areas.geometry.representative_point()
         nmax = areas["n_pacientes"].max()
         fig.add_trace(go.Scatter(
-            x=pts.x, y=pts.y, mode="markers+text" if rotulos_on else "markers", showlegend=False,
+            x=pts.x, y=pts.y, mode="markers+text" if (rotulos_on and not pos) else "markers", showlegend=False,
             text=[f"{n} ({_br(v)}%)" for n, v in zip(areas["nome"], areas[valor_col])], textposition="middle right",
             textfont=dict(size=10, color=TINTA),
             marker=dict(size=[math.sqrt(_tam(n, nmax)) * 1.35 for n in areas["n_pacientes"]],
@@ -650,11 +926,13 @@ def figura_interativa(cena: dict, altura=620):
         # ponto invisível no centro de cada área: facilita o hover em áreas pequenas
         pts = areas.geometry.representative_point()
         fig.add_trace(go.Scatter(
-            x=pts.x, y=pts.y, mode="markers+text" if rotulos_on else "markers", showlegend=False,
+            x=pts.x, y=pts.y, mode="markers+text" if (rotulos_on and not pos) else "markers", showlegend=False,
             marker=dict(size=10, color="rgba(0,0,0,0)"),
             text=[f"{n}<br>{_br(v)}%" for n, v in zip(areas["nome"], areas[valor_col])],
             textfont=dict(size=10, color=TINTA, shadow="1px 1px 2px white, -1px -1px 2px white, 1px -1px 2px white, -1px 1px 2px white"),
             hovertemplate=[_hover(r) for _, r in areas.iterrows()]))
+    if pos:
+        _rotulos_interativos(fig, pos, pontos)
     for c, r in zip(RAMPA, rotulos(lims)):
         fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", name=r,
                                  marker=dict(symbol="square", size=12, color=c, line=dict(color=TINTA_SUAVE, width=0.5))))
