@@ -352,7 +352,11 @@ def classes(valores, modo: str = "auto"):
     hi = 5 * math.ceil(max(v) / 5)
     if hi <= lo:
         hi = lo + 5
+    if len(v) < 3:  # uma ou duas áreas: faixas automáticas não fazem sentido
+        return [0, 10, 20, 40, 60, 100.0001]
     passo = max(5, 5 * math.ceil((hi - lo) / 25))
+    if lo + 4 * passo >= 100:  # a última faixa não pode começar em 100% ou mais
+        lo = max(0, 100 - 5 * passo)
     lims = [lo + i * passo for i in range(6)]
     lims[-1] = max(lims[-1], max(v)) + 0.0001
     return lims
@@ -462,59 +466,97 @@ def _inset(fig, rect, ufs_destaque, ext):
     _aspecto(ax, -15)
 
 
-LIMIAR_PONTOS_GRAUS = 4.0   # acima dessa extensão, municípios viram círculos proporcionais
-
-
-def usar_pontos(areas) -> bool:
-    """Áreas espalhadas por uma região grande (ex.: capitais de vários estados)
-    ficariam minúsculas como polígonos — nesse caso desenha-se um círculo por
-    área (cor = prevalência, tamanho = nº de pacientes) sobre os estados."""
-    minx, miny, maxx, maxy = areas.total_bounds
-    return max(maxx - minx, maxy - miny) > LIMIAR_PONTOS_GRAUS
+REGIOES = {
+    "Norte": ["AC", "AM", "AP", "PA", "RO", "RR", "TO"],
+    "Nordeste": ["AL", "BA", "CE", "MA", "PB", "PE", "PI", "RN", "SE"],
+    "Centro-Oeste": ["DF", "GO", "MS", "MT"],
+    "Sudeste": ["ES", "MG", "RJ", "SP"],
+    "Sul": ["PR", "RS", "SC"],
+}
+REGIAO_DA_UF = {u: r for r, us in REGIOES.items() for u in us}
+NOME_UF = {"AC": "Acre", "AL": "Alagoas", "AM": "Amazonas", "AP": "Amapá", "BA": "Bahia", "CE": "Ceará",
+           "DF": "Distrito Federal", "ES": "Espírito Santo", "GO": "Goiás", "MA": "Maranhão", "MG": "Minas Gerais",
+           "MS": "Mato Grosso do Sul", "MT": "Mato Grosso", "PA": "Pará", "PB": "Paraíba", "PE": "Pernambuco",
+           "PI": "Piauí", "PR": "Paraná", "RJ": "Rio de Janeiro", "RN": "Rio Grande do Norte", "RO": "Rondônia",
+           "RR": "Roraima", "RS": "Rio Grande do Sul", "SC": "Santa Catarina", "SE": "Sergipe", "SP": "São Paulo",
+           "TO": "Tocantins"}
+RECORTES = ("brasil", "regiao", "estado", "municipio")
 
 
 def _tam(n, nmax):
     return 40 + 520 * (n / max(nmax, 1))
 
 
-def figura_estatica(areas, valor_col, titulo, rotulo_area, lims, contexto=None, sem_dados=None,
-                    ufs_destaque=(), mostrar_rotulos=True, nota=""):
-    """areas: GeoDataFrame com 'nome' e a coluna de valor. contexto: polígonos de
-    fundo (brancos). sem_dados: polígonos da mesma categoria sem dados (cinza)."""
+def _ext_pad(bounds, frac=0.06, minimo=0.01):
+    minx, miny, maxx, maxy = bounds
+    pad = max(maxx - minx, maxy - miny) * frac + minimo
+    return (minx - pad, miny - pad, maxx + pad, maxy + pad)
+
+
+def figura_bytes(fig, formato="png", dpi=300) -> bytes:
+    buf = io.BytesIO()
+    kw = {"pil_kwargs": {"compression": "tiff_lzw"}} if formato == "tiff" else {}
+    fig.savefig(buf, format=formato, dpi=dpi, facecolor="white", **kw)
+    return buf.getvalue()
+
+
+def _aneis(geom):
+    from shapely.geometry import MultiPolygon
+    if geom is None or geom.is_empty:
+        return [], []
+    polys = geom.geoms if isinstance(geom, MultiPolygon) else [geom]
+    xs, ys = [], []
+    for p in polys:
+        if p.geom_type != "Polygon":
+            continue
+        x, y = p.exterior.xy
+        xs += list(x) + [None]
+        ys += list(y) + [None]
+    return xs, ys
+
+
+# ----------------------------------------------------------------------------
+# figura estática (padrão cartográfico)
+# ----------------------------------------------------------------------------
+def figura_estatica(cena: dict):
+    """cena: dict montado por preparar_mapa (áreas, camadas de fundo, extensão,
+    classes, estilo, títulos)."""
+    areas, valor_col, lims = cena["areas"], cena["valor_col"], cena["lims"]
+    ext, pontos, rotulos_on = cena["ext"], cena["pontos"], cena["rotulos"]
     with plt.rc_context({"font.family": _FAMILIA, "font.size": 8.5}):
         cmap = ListedColormap(RAMPA)
         norm = BoundaryNorm(lims, cmap.N)
         fig = plt.figure(figsize=(7.6, 6.0), dpi=150, facecolor="white")
         ax = fig.add_axes([0.075, 0.085, 0.66, 0.83])
         ax.set_facecolor(FUNDO)
-        pontos = usar_pontos(areas)
-        minx, miny, maxx, maxy = areas.total_bounds
-        pad = max(maxx - minx, maxy - miny) * (0.18 if pontos else 0.12) + (1.0 if pontos else 0.01)
-        ext = (minx - pad, miny - pad, maxx + pad, maxy + pad)
+        lw_fundo = 0.25 if cena["recorte"] in ("brasil", "regiao") else 0.6
+        for camada in cena["fundo"]:
+            camada.plot(ax=ax, color="white", edgecolor=BORDA, linewidth=lw_fundo)
+        if cena.get("ufs_contorno") is not None:
+            cena["ufs_contorno"].boundary.plot(ax=ax, color="#8F8A80", linewidth=0.6)
+        sem = cena.get("sem_dados")
+        if sem is not None and not sem.empty:
+            sem.plot(ax=ax, color=SEM_DADO, edgecolor="white", linewidth=0.5)
         if pontos:
-            contorno_ufs().plot(ax=ax, color="white", edgecolor=BORDA, linewidth=0.6)
             pts = areas.geometry.representative_point()
             nmax = areas["n_pacientes"].max()
             ax.scatter(pts.x, pts.y, s=[_tam(n, nmax) for n in areas["n_pacientes"]],
                        c=areas[valor_col], cmap=cmap, norm=norm, edgecolor=TINTA, linewidth=0.6, zorder=5)
-            if mostrar_rotulos:
+            if rotulos_on:
                 for p, nome, v, n in zip(pts, areas["nome"], areas[valor_col], areas["n_pacientes"]):
                     r = math.sqrt(_tam(n, nmax)) / 2
                     ax.annotate(f"{nome} ({_br(v)}%)", (p.x, p.y), xytext=(r + 3, 0), textcoords="offset points",
                                 va="center", fontsize=5.8, color=TINTA, zorder=6,
                                 path_effects=[pe.withStroke(linewidth=2, foreground="white")])
         else:
-            if contexto is not None and not contexto.empty:
-                contexto.cx[ext[0]:ext[2], ext[1]:ext[3]].plot(ax=ax, color="white", edgecolor=BORDA, linewidth=0.6)
-            if sem_dados is not None and not sem_dados.empty:
-                sem_dados.plot(ax=ax, color=SEM_DADO, edgecolor="white", linewidth=0.6)
-            areas.plot(ax=ax, column=valor_col, cmap=cmap, norm=norm, edgecolor="white", linewidth=0.9)
-            if mostrar_rotulos:
-                pts = areas.geometry.representative_point()
-                for p, nome, v in zip(pts, areas["nome"], areas[valor_col]):
+            # áreas pequenas demais para a escala ganham um contorno fino escuro, para não sumirem
+            borda = TINTA if cena["recorte"] in ("brasil", "regiao") else "white"
+            areas.plot(ax=ax, column=valor_col, cmap=cmap, norm=norm, edgecolor=borda,
+                       linewidth=0.35 if borda == TINTA else 0.9, zorder=4)
+            if rotulos_on:
+                for p, nome, v in zip(areas.geometry.representative_point(), areas["nome"], areas[valor_col]):
                     ax.text(p.x, p.y, f"{nome}\n{_br(v)}%", ha="center", va="center", fontsize=5.6, zorder=5,
-                            linespacing=1.1, color=TINTA,
-                            path_effects=[pe.withStroke(linewidth=2.2, foreground="white")])
+                            linespacing=1.1, color=TINTA, path_effects=[pe.withStroke(linewidth=2.2, foreground="white")])
         ax.set_xlim(ext[0], ext[2])
         ax.set_ylim(ext[1], ext[3])
         lat_c = (ext[1] + ext[3]) / 2
@@ -523,8 +565,8 @@ def figura_estatica(areas, valor_col, titulo, rotulo_area, lims, contexto=None, 
         _norte(ax)
         _escala(ax, lat_c)
         h = [Patch(facecolor=c, edgecolor=TINTA_SUAVE, lw=0.4, label=r) for c, r in zip(RAMPA, rotulos(lims))]
-        if sem_dados is not None and not sem_dados.empty:
-            h.append(Patch(facecolor=SEM_DADO, edgecolor=TINTA_SUAVE, lw=0.4, label=f"{rotulo_area} sem dados"))
+        if sem is not None and not sem.empty:
+            h.append(Patch(facecolor=SEM_DADO, edgecolor=TINTA_SUAVE, lw=0.4, label=f"{cena['rotulo_area']} sem dados"))
         leg = ax.legend(handles=h, title="Prevalência", loc="upper left", bbox_to_anchor=(1.06, 0.62),
                         fontsize=6.8, title_fontsize=7.2, frameon=True, framealpha=0.95, edgecolor=LINHA,
                         borderpad=0.7, labelspacing=0.45, handlelength=1.4)
@@ -536,99 +578,90 @@ def figura_estatica(areas, valor_col, titulo, rotulo_area, lims, contexto=None, 
             ax.add_artist(leg)
             hs = [Line2D([], [], marker="o", ls="", markerfacecolor="white", markeredgecolor=TINTA,
                          markersize=math.sqrt(_tam(v, nmax)), label=str(v)) for v in refs]
-            leg2 = ax.legend(handles=hs, title="Pacientes (n)", loc="upper left", bbox_to_anchor=(1.06, 0.25),
-                             fontsize=6.8, title_fontsize=7.2, frameon=True, framealpha=0.95, edgecolor=LINHA,
-                             borderpad=0.9, labelspacing=1.3, handletextpad=1.2)
-        if max(ext[2] - ext[0], ext[3] - ext[1]) < 15:
-            _inset(fig, [0.765, 0.60, 0.2, 0.3], set(ufs_destaque), ext)
-        fig.suptitle(titulo, x=0.075, ha="left", y=0.985, fontsize=10.5, color=MATA)
-        rod = f"{SRC_TXT} · {FONTE_MALHA}" + (f" · {nota}" if nota else "")
+            ax.legend(handles=hs, title="Pacientes (n)", loc="upper left", bbox_to_anchor=(1.06, 0.25),
+                      fontsize=6.8, title_fontsize=7.2, frameon=True, framealpha=0.95, edgecolor=LINHA,
+                      borderpad=0.9, labelspacing=1.3, handletextpad=1.2)
+        if cena["recorte"] != "brasil":
+            _inset(fig, [0.765, 0.60, 0.2, 0.3], set(cena["ufs_destaque"]), ext)
+        fig.suptitle(cena["titulo"], x=0.075, ha="left", y=0.985, fontsize=10.5, color=MATA)
+        rod = f"{SRC_TXT} · {FONTE_MALHA}" + (f" · {cena['nota']}" if cena.get("nota") else "")
         fig.text(0.5, 0.012, rod, ha="center", va="bottom", fontsize=6.0, color=TINTA_SUAVE)
     return fig
-
-
-def figura_bytes(fig, formato="png", dpi=300) -> bytes:
-    buf = io.BytesIO()
-    kw = {"pil_kwargs": {"compression": "tiff_lzw"}} if formato == "tiff" else {}
-    fig.savefig(buf, format=formato, dpi=dpi, facecolor="white", **kw)
-    return buf.getvalue()
 
 
 # ----------------------------------------------------------------------------
 # versão interativa (plotly, SVG puro)
 # ----------------------------------------------------------------------------
-def _aneis(geom):
-    from shapely.geometry import MultiPolygon
-    polys = geom.geoms if isinstance(geom, MultiPolygon) else [geom]
-    xs, ys = [], []
-    for p in polys:
-        x, y = p.exterior.xy
-        xs += list(x) + [None]
-        ys += list(y) + [None]
-    return xs, ys
-
-
-def figura_interativa(areas, valor_col, rotulo_area, lims, contexto=None, sem_dados=None,
-                      mostrar_rotulos=True, altura=620):
+def _camada_unica(fig, gdf, cor, borda, larg):
+    """Desenha muitos polígonos numa só trace (rápido mesmo com milhares)."""
     import plotly.graph_objects as go
+    xs, ys = [], []
+    for g in gdf.geometry:
+        x, y = _aneis(g)
+        xs += x
+        ys += y
+    if xs:
+        fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", fill="toself", fillcolor=cor,
+                                 line=dict(color=borda, width=larg), hoverinfo="skip", showlegend=False))
+
+
+def figura_interativa(cena: dict, altura=620):
+    import plotly.graph_objects as go
+    areas, valor_col, lims = cena["areas"], cena["valor_col"], cena["lims"]
+    ext, pontos, rotulos_on, rot_area = cena["ext"], cena["pontos"], cena["rotulos"], cena["rotulo_area"]
     fig = go.Figure()
-    pontos = usar_pontos(areas)
-    minx, miny, maxx, maxy = areas.total_bounds
-    pad = max(maxx - minx, maxy - miny) * (0.18 if pontos else 0.12) + (1.0 if pontos else 0.01)
-    ext = (minx - pad, miny - pad, maxx + pad, maxy + pad)
-    if pontos:
-        contexto, sem_dados = contorno_ufs(), None
-    if contexto is not None and not contexto.empty:
-        for g in contexto.cx[ext[0]:ext[2], ext[1]:ext[3]].geometry:
-            xs, ys = _aneis(g)
-            fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", fill="toself", fillcolor="#FFFFFF",
-                                     line=dict(color=BORDA, width=0.8), hoverinfo="skip", showlegend=False))
-    if sem_dados is not None and not sem_dados.empty:
-        for _, r in sem_dados.iterrows():
-            xs, ys = _aneis(r.geometry)
-            fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", fill="toself", fillcolor=SEM_DADO,
-                                     line=dict(color="white", width=1), hoveron="fills", showlegend=False, name="",
-                                     hovertemplate=f"<b>{r['nome']}</b><br>Sem dados<extra></extra>"))
-    for _, r in (areas.iloc[0:0] if pontos else areas).iterrows():
-        xs, ys = _aneis(r.geometry)
-        ic = ""
-        if pd.notna(r.get("ic95_inf")) and pd.notna(r.get("ic95_sup")) and valor_col == "prevalencia":
-            ic = f" (IC 95% {_br(r['ic95_inf'])}–{_br(r['ic95_sup'])}%)"
-        fig.add_trace(go.Scatter(
-            x=xs, y=ys, mode="lines", fill="toself", fillcolor=cor_de(r[valor_col], lims),
-            line=dict(color="white", width=1.3), hoveron="fills", showlegend=False, name="",
-            hovertemplate=(f"<b>{r['nome']}</b><br>{rotulo_area}<br>Pacientes: {int(r['n_pacientes'])}"
-                           f"<br>Prevalência: <b>{_br(r[valor_col])}%</b>{ic}<extra></extra>")))
+    for camada in cena["fundo"]:
+        _camada_unica(fig, camada, "#FFFFFF", BORDA, 0.5 if cena["recorte"] in ("brasil", "regiao") else 0.8)
+    if cena.get("ufs_contorno") is not None:
+        for g in cena["ufs_contorno"].geometry:
+            x, y = _aneis(g)
+            fig.add_trace(go.Scatter(x=x, y=y, mode="lines", line=dict(color="#8F8A80", width=1),
+                                     hoverinfo="skip", showlegend=False))
+    sem = cena.get("sem_dados")
+    if sem is not None and not sem.empty:
+        _camada_unica(fig, sem, SEM_DADO, "white", 0.8)
+
+    def _ic(r):
+        if valor_col == "prevalencia" and pd.notna(r.get("ic95_inf")) and pd.notna(r.get("ic95_sup")):
+            return f" (IC 95% {_br(r['ic95_inf'])}–{_br(r['ic95_sup'])}%)"
+        return ""
+
+    def _hover(r):
+        return (f"<b>{r['nome']}</b><br>{rot_area}<br>Pacientes: {int(r['n_pacientes'])}"
+                f"<br>Prevalência: <b>{_br(r[valor_col])}%</b>{_ic(r)}<extra></extra>")
+
     if pontos:
         pts = areas.geometry.representative_point()
         nmax = areas["n_pacientes"].max()
-
-        def _ic(r):
-            if pd.notna(r.get("ic95_inf")) and pd.notna(r.get("ic95_sup")) and valor_col == "prevalencia":
-                return f" (IC 95% {_br(r['ic95_inf'])}–{_br(r['ic95_sup'])}%)"
-            return ""
         fig.add_trace(go.Scatter(
-            x=pts.x, y=pts.y, mode="markers+text" if mostrar_rotulos else "markers", showlegend=False,
+            x=pts.x, y=pts.y, mode="markers+text" if rotulos_on else "markers", showlegend=False,
             text=[f"{n} ({_br(v)}%)" for n, v in zip(areas["nome"], areas[valor_col])], textposition="middle right",
             textfont=dict(size=10, color=TINTA),
             marker=dict(size=[math.sqrt(_tam(n, nmax)) * 1.35 for n in areas["n_pacientes"]],
                         color=[cor_de(v, lims) for v in areas[valor_col]], line=dict(color=TINTA, width=0.8)),
-            hovertemplate=[f"<b>{r['nome']}</b><br>{rotulo_area}<br>Pacientes: {int(r['n_pacientes'])}"
-                           f"<br>Prevalência: <b>{_br(r[valor_col])}%</b>{_ic(r)}<extra></extra>"
-                           for _, r in areas.iterrows()],
-        ))
-    elif mostrar_rotulos:
+            hovertemplate=[_hover(r) for _, r in areas.iterrows()]))
+    else:
+        borda = TINTA if cena["recorte"] in ("brasil", "regiao") else "white"
+        for _, r in areas.iterrows():
+            xs, ys = _aneis(r.geometry)
+            fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", fill="toself", fillcolor=cor_de(r[valor_col], lims),
+                                     line=dict(color=borda, width=0.6 if borda == TINTA else 1.3), hoveron="fills",
+                                     showlegend=False, name="", hovertemplate=_hover(r)))
+        # ponto invisível no centro de cada área: facilita o hover em áreas pequenas
         pts = areas.geometry.representative_point()
         fig.add_trace(go.Scatter(
-            x=pts.x, y=pts.y, mode="text", hoverinfo="skip", showlegend=False,
+            x=pts.x, y=pts.y, mode="markers+text" if rotulos_on else "markers", showlegend=False,
+            marker=dict(size=10, color="rgba(0,0,0,0)"),
             text=[f"{n}<br>{_br(v)}%" for n, v in zip(areas["nome"], areas[valor_col])],
-            textfont=dict(size=10, color=TINTA, shadow="1px 1px 2px white, -1px -1px 2px white, 1px -1px 2px white, -1px 1px 2px white")))
+            textfont=dict(size=10, color=TINTA, shadow="1px 1px 2px white, -1px -1px 2px white, 1px -1px 2px white, -1px 1px 2px white"),
+            hovertemplate=[_hover(r) for _, r in areas.iterrows()]))
     for c, r in zip(RAMPA, rotulos(lims)):
         fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", name=r,
                                  marker=dict(symbol="square", size=12, color=c, line=dict(color=TINTA_SUAVE, width=0.5))))
     lat_c = (ext[1] + ext[3]) / 2
+    casas = ".0f" if (ext[2] - ext[0]) > 8 else ".2f"
     eixo = dict(showgrid=True, gridcolor="#E6E1D6", zeroline=False, ticks="inside", mirror=True, showline=True,
-                linecolor=TINTA, tickformat=".2f", ticksuffix="°", tickfont=dict(size=10, color=TINTA_SUAVE))
+                linecolor=TINTA, tickformat=casas, ticksuffix="°", tickfont=dict(size=10, color=TINTA_SUAVE))
     fig.update_xaxes(range=[ext[0], ext[2]], **eixo)
     fig.update_yaxes(range=[ext[1], ext[3]], scaleanchor="x", scaleratio=1 / math.cos(math.radians(lat_c)), **eixo)
     fig.update_layout(
@@ -644,87 +677,137 @@ def figura_interativa(areas, valor_col, rotulo_area, lims, contexto=None, sem_da
 
 
 # ----------------------------------------------------------------------------
+# opções de recorte a partir dos dados
+# ----------------------------------------------------------------------------
+def opcoes_recorte(metrics: dict, nivel: str) -> dict:
+    """Regiões, UFs e municípios que têm pacientes (no nível pedido), em ordem
+    de nº de pacientes. Devolve {'regiao': [...], 'estado': [...], 'municipio': [...]}."""
+    tab = metrics.get("territorio_municipio" if nivel == "municipio" else "territorio_bairro")
+    if tab is None or tab.empty:
+        return {"regiao": [], "estado": [], "municipio": []}
+    t = tab.assign(_uf=tab["uf"].astype(str).str.upper())
+    t = t[t["_uf"].isin(NOME_UF)]
+    por_uf = t.groupby("_uf")["n_pacientes"].sum().sort_values(ascending=False)
+    por_reg = t.assign(_r=t["_uf"].map(REGIAO_DA_UF)).groupby("_r")["n_pacientes"].sum().sort_values(ascending=False)
+    por_mun = t.assign(_m=t["municipio"].astype(str) + "/" + t["_uf"]).groupby("_m")["n_pacientes"].sum() \
+        .sort_values(ascending=False)
+    return {"regiao": list(por_reg.index), "estado": list(por_uf.index), "municipio": list(por_mun.index)}
+
+
+def municipios_com_bairro(metrics: dict) -> list[str]:
+    return opcoes_recorte(metrics, "bairro")["municipio"]
+
+
+def _ufs_do_recorte(recorte, valor):
+    if recorte == "regiao":
+        return set(REGIOES.get(valor, []))
+    if recorte == "estado":
+        return {str(valor).upper()}
+    if recorte == "municipio":
+        return {str(valor).partition("/")[2].upper()}
+    return set(NOME_UF)
+
+
+# ----------------------------------------------------------------------------
 # ponto de entrada usado pelo app
 # ----------------------------------------------------------------------------
-def municipios_com_bairro(metrics: dict) -> list[str]:
-    """'Município/UF' que têm pacientes com bairro, do maior para o menor."""
-    tb = metrics.get("territorio_bairro")
-    if tb is None or tb.empty:
-        return []
-    g = tb.assign(_r=tb["municipio"].astype(str) + "/" + tb["uf"].astype(str).str.upper()) \
-        .groupby("_r")["n_pacientes"].sum().sort_values(ascending=False)
-    return [r.rstrip("/") for r in g.index]
-
-
 def preparar_mapa(metrics: dict, nivel: str, indicador: str, modo_classes: str = "auto",
-                  limites=None, col_nome=None, mostrar_rotulos=None, municipio_foco: str | None = None):
-    """Monta tudo o que a tela/PDF precisam. Devolve dict com 'ok', 'avisos',
-    'fig_estatica', 'fig_interativa', 'titulo' — ou ok=False e 'erro'."""
+                  limites=None, col_nome=None, mostrar_rotulos=None, municipio_foco: str | None = None,
+                  recorte: str | None = None, recorte_valor: str | None = None, estilo: str = "areas"):
+    """Monta o mapa. nivel: 'municipio' | 'bairro'. recorte: 'brasil' | 'regiao'
+    | 'estado' | 'municipio' (recorte_valor = nome da região, sigla da UF ou
+    'Município/UF'). estilo: 'areas' (áreas coloridas) | 'pontos' (círculos
+    proporcionais). Devolve dict com 'ok', 'avisos', 'fig_estatica',
+    'fig_interativa', 'titulo' — ou ok=False e 'erro'."""
+    gpd = _gpd()
     valor_col = "prevalencia" if indicador == "todos" else "prevalencia_patogenico"
     qual = "enteroparasitos" if indicador == "todos" else "enteroparasitos patogênicos"
     avisos: list[str] = []
+    if recorte is None:  # compatibilidade: mapa de bairros de uma cidade
+        recorte, recorte_valor = ("municipio", municipio_foco) if municipio_foco else ("brasil", None)
+    ufs_rec = _ufs_do_recorte(recorte, recorte_valor)
+
     tab_m = metrics.get("territorio_municipio")
     if tab_m is None or tab_m.empty:
         return {"ok": False, "erro": "Nenhum paciente com município preenchido — não há o que mapear."}
-    mun_dados, ufs, av = casar_municipios(tab_m)
-    avisos += av
-    contexto = None
-    if ufs:
-        gpd = _gpd()
-        contexto = gpd.GeoDataFrame(pd.concat([municipios_uf(u) for u in sorted(ufs)], ignore_index=True), crs=CRS)
 
+    # ---- unidades com dados (municípios ou bairros) dentro do recorte ----
+    nota = ""
     if nivel == "municipio":
-        if mun_dados is None:
-            return {"ok": False, "erro": "Nenhum município da planilha foi encontrado na malha do IBGE.",
+        t = tab_m[tab_m["uf"].astype(str).str.upper().isin(ufs_rec) | (recorte == "brasil")]
+        if recorte == "municipio":
+            nome_f = str(recorte_valor).partition("/")[0]
+            t = t[t["municipio"].map(chave) == chave(nome_f)]
+        if t.empty:
+            return {"ok": False, "erro": "Nenhum paciente com município neste recorte."}
+        areas, _, av = casar_municipios(t)
+        avisos += av
+        if areas is None:
+            return {"ok": False, "erro": "Nenhum município do recorte foi encontrado na malha do IBGE.",
                     "avisos": avisos}
-        areas, sem, rot_area = mun_dados, None, "Município"
-        titulo = f"Prevalência de {qual} por município de residência"
+        sem, rot_area, unidade = None, "Município", "município"
     else:
         tab_b = metrics.get("territorio_bairro")
         if tab_b is None or tab_b.empty:
             return {"ok": False, "erro": "Nenhum paciente com bairro preenchido.", "avisos": avisos}
-        if municipio_foco:
-            nome_f, _, uf_f = municipio_foco.partition("/")
-            sel = tab_b["municipio"].map(chave) == chave(nome_f)
-            if uf_f:
-                sel &= tab_b["uf"].astype(str).str.upper() == uf_f.upper()
-            tab_b = tab_b[sel]
-            if tab_b.empty:
-                return {"ok": False, "erro": f"Nenhum bairro com pacientes em {municipio_foco}.", "avisos": avisos}
-            # mapa de bairros é de uma cidade: o contexto é só a UF dela
-            if uf_f and municipios_uf(uf_f) is not None:
-                contexto = municipios_uf(uf_f)
-                ufs = {uf_f.upper()}
+        tb = tab_b[tab_b["uf"].astype(str).str.upper().isin(ufs_rec) | (recorte == "brasil")]
+        if recorte == "municipio":
+            nome_f = str(recorte_valor).partition("/")[0]
+            tb = tb[tb["municipio"].map(chave) == chave(nome_f)]
+        if tb.empty:
+            return {"ok": False, "erro": "Nenhum paciente com bairro neste recorte.", "avisos": avisos}
         if limites is None:
-            # padrão: Malha de Bairros do Censo 2022 (IBGE)
-            areas, sem, ufs_b, av = casar_bairros_ibge(tab_b)
+            areas, sem, _, av = casar_bairros_ibge(tb)
             avisos += av
             if areas is None:
-                return {"ok": False, "erro": "Nenhum bairro da planilha foi encontrado na malha de bairros do "
-                                             "IBGE. Confira bairro/município/UF na planilha, use o mapa por "
-                                             "município ou envie os limites da prefeitura.", "avisos": avisos}
-            ufs = set(ufs) | set(ufs_b)
+                return {"ok": False, "erro": "Nenhum bairro do recorte foi encontrado nas malhas de bairros. "
+                                             "Use o mapa por município ou envie os limites da prefeitura.",
+                        "avisos": avisos}
             fontes = sorted(set(areas["fonte"].dropna())) if "fonte" in areas.columns else [FONTE_BAIRROS_IBGE]
-            fonte_bairros = "Limites intramunicipais: " + "; ".join(fontes)
+            nota = "Limites intramunicipais: " + "; ".join(fontes)
         else:
-            areas, todos, av = casar_bairros(tab_b, limites, col_nome)
+            areas, todos, av = casar_bairros(tb, limites, col_nome)
             avisos += av
             if areas is None:
                 return {"ok": False, "erro": "Nenhum bairro da planilha foi encontrado no arquivo de limites "
                                              "(confira a coluna com o nome do bairro).", "avisos": avisos}
             sem = todos[todos["prevalencia"].isna()]
-            fonte_bairros = "Bairros: arquivo de limites enviado pelo usuário"
+            nota = "Limites intramunicipais: arquivo enviado pelo usuário"
         rot_area = "Bairro"
-        munis = sorted(set(tab_b["municipio"].astype(str)) - {""})
-        if municipio_foco:
-            termo = TERMO_DIVISAO.get(municipio_foco, "bairro")
-            titulo = f"Prevalência de {qual} por {termo} de residência — {municipio_foco}"
-        else:
-            titulo = f"Prevalência de {qual} por bairro de residência" + (f" — {', '.join(munis)}" if len(munis) <= 2 else "")
-        if not ufs:
-            ufs = {str(u).upper() for u in tab_b["uf"] if str(u).strip()}
+        unidade = TERMO_DIVISAO.get(recorte_valor, "bairro") if recorte == "municipio" else "bairro"
 
-    nota = fonte_bairros if nivel != "municipio" else ""
+    # ---- extensão e camadas de fundo, conforme o recorte ----
+    ufs_gdf = contorno_ufs()
+    ufs_dados = set(areas["uf"].astype(str).str.upper()) if "uf" in areas.columns else set()
+    fundo, ufs_contorno = [], None
+    if recorte == "brasil":
+        ext = _ext_pad(ufs_gdf.total_bounds, 0.03)
+        fundo = [ufs_gdf]
+        local = "Brasil"
+    elif recorte == "regiao":
+        reg = ufs_gdf[ufs_gdf["sigla"].isin(ufs_rec)]
+        ext = _ext_pad(reg.total_bounds, 0.05)
+        fundo = [ufs_gdf]
+        ufs_contorno = reg
+        local = f"Região {recorte_valor}"
+    elif recorte == "estado":
+        uf = next(iter(ufs_rec))
+        mun_uf = municipios_uf(uf)
+        ext = _ext_pad(mun_uf.total_bounds, 0.05)
+        fundo = [ufs_gdf, mun_uf]
+        ufs_contorno = ufs_gdf[ufs_gdf["sigla"] == uf]
+        local = NOME_UF.get(uf, uf)
+    else:  # municipio
+        nome_f, _, uf = str(recorte_valor).partition("/")
+        mun_uf = municipios_uf(uf)
+        alvo = mun_uf[mun_uf["_k"] == chave(nome_f)] if mun_uf is not None else None
+        base_b = alvo.total_bounds if alvo is not None and not alvo.empty else areas.total_bounds
+        ext = _ext_pad(base_b, 0.08)
+        fundo = [ufs_gdf] + ([mun_uf] if mun_uf is not None else [])
+        local = str(recorte_valor)
+    if sem is not None and not sem.empty:
+        sem = sem.cx[ext[0]:ext[2], ext[1]:ext[3]]
+    pontos = (estilo == "pontos")
     lims = classes(areas[valor_col], modo_classes)
     if mostrar_rotulos is None:
         mostrar_rotulos = len(areas) <= 15
@@ -732,8 +815,12 @@ def preparar_mapa(metrics: dict, nivel: str, indicador: str, modo_classes: str =
     if pequenos:
         avisos.append(f"{pequenos} área(s) com menos de 10 pacientes: prevalência pouco precisa — "
                       "interprete com cuidado (veja o IC 95% na tabela).")
-    fig_e = figura_estatica(areas, valor_col, titulo, rot_area, lims, contexto=contexto, sem_dados=sem,
-                            ufs_destaque=ufs, mostrar_rotulos=mostrar_rotulos, nota=nota)
-    fig_i = figura_interativa(areas, valor_col, rot_area, lims, contexto=contexto, sem_dados=sem,
-                              mostrar_rotulos=mostrar_rotulos)
-    return {"ok": True, "avisos": avisos, "fig_estatica": fig_e, "fig_interativa": fig_i, "titulo": titulo}
+    if not pontos and nivel == "municipio" and recorte in ("brasil", "regiao"):
+        avisos.append("Em escala nacional/regional, municípios pequenos ficam quase invisíveis como áreas — "
+                      "se for o caso, use 'Círculos proporcionais'.")
+    titulo = f"Prevalência de {qual} por {unidade} de residência — {local}"
+    cena = dict(areas=areas, valor_col=valor_col, lims=lims, ext=ext, pontos=pontos, rotulos=mostrar_rotulos,
+                fundo=fundo, ufs_contorno=ufs_contorno, sem_dados=sem, rotulo_area=rot_area, recorte=recorte,
+                ufs_destaque=ufs_dados or ufs_rec, titulo=titulo, nota=nota)
+    return {"ok": True, "avisos": avisos, "fig_estatica": figura_estatica(cena),
+            "fig_interativa": figura_interativa(cena), "titulo": titulo}

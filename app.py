@@ -569,16 +569,41 @@ def painel_mapa(metrics: dict):
         modo = st.radio("Classes de prevalência", ["Automáticas", "Fixas"], horizontal=True, key="mapa_cls",
                         help="Automáticas: 5 faixas de 5 em 5 pontos (ou mais largas) a partir dos dados. "
                              "Fixas: <10, 10–20, 20–40, 40–60, ≥60% — use para comparar estudos.")
-    limites, col_nome, foco = None, None, None
-    if nivel == "Bairro":
-        cidades = mapas.municipios_com_bairro(metrics)
-        if len(cidades) > 1:
-            foco = st.selectbox(
-                "Município do mapa de bairros", cidades, key="mapa_foco",
-                help="O mapa por bairro mostra uma cidade por vez (em ordem de nº de pacientes).",
-            )
-        elif cidades:
-            foco = cidades[0]
+    limites, col_nome = None, None
+    niv = "municipio" if nivel == "Município" else "bairro"
+    opc = mapas.opcoes_recorte(metrics, niv)
+    r1, r2, r3 = st.columns([1.3, 1.2, 1])
+    with r1:
+        nomes_rec = {"Brasil": "brasil", "Região": "regiao", "Estado": "estado", "Município": "municipio"}
+        rec_label = st.radio(
+            "Recorte do mapa", list(nomes_rec), horizontal=True,
+            index=0 if niv == "municipio" else 3, key=f"mapa_rec_{niv}",
+            help="Enquadramento do mapa: o Brasil inteiro, uma região (Norte, Nordeste...), um estado ou "
+                 "um município. Só entram os dados de dentro do recorte.",
+        )
+        recorte = nomes_rec[rec_label]
+    recorte_valor = None
+    with r2:
+        if recorte == "regiao":
+            recorte_valor = st.selectbox("Região", opc["regiao"], key=f"mapa_reg_{niv}")
+        elif recorte == "estado":
+            recorte_valor = st.selectbox("Estado", opc["estado"], key=f"mapa_uf_{niv}",
+                                         format_func=lambda u: f"{mapas.NOME_UF.get(u, u)} ({u})")
+        elif recorte == "municipio":
+            recorte_valor = st.selectbox("Município", opc["municipio"], key=f"mapa_mun_{niv}")
+    with r3:
+        if niv == "municipio":
+            estilo_lbl = st.radio("Estilo", ["Áreas coloridas", "Círculos"], horizontal=True, key="mapa_estilo",
+                                  help="Áreas: cada município pintado pela prevalência. Círculos: um círculo "
+                                       "por município (cor = prevalência, tamanho = nº de pacientes) — melhor "
+                                       "quando os municípios ficam pequenos na escala do mapa.")
+            estilo = "pontos" if estilo_lbl == "Círculos" else "areas"
+        else:
+            estilo = "areas"
+    if recorte != "brasil" and not recorte_valor:
+        st.info("Não há pacientes com essa informação para montar este recorte.")
+        st.session_state.pop("mapa_pdf", None)
+        return
     if nivel == "Bairro":
         fonte_b = st.radio(
             "Limites dos bairros", ["Malha de bairros do IBGE (Censo 2022)", "Arquivo próprio (ex.: prefeitura)"],
@@ -608,13 +633,18 @@ def painel_mapa(metrics: dict):
         sug = mapas.coluna_nome_provavel(cols)
         col_nome = st.selectbox("Coluna com o nome do bairro no arquivo", cols,
                                 index=cols.index(sug) if sug in cols else 0, key="mapa_colnome")
-    if nivel == "Município":
-        n_areas = len(metrics["territorio_municipio"])
+    tab_ = metrics["territorio_municipio" if niv == "municipio" else "territorio_bairro"]
+    uf_ = tab_["uf"].astype(str).str.upper()
+    if recorte == "brasil":
+        n_areas = len(tab_)
+    elif recorte == "regiao":
+        n_areas = int(uf_.isin(mapas.REGIOES.get(recorte_valor, [])).sum())
+    elif recorte == "estado":
+        n_areas = int(uf_.eq(recorte_valor).sum())
     else:
-        tb_ = metrics["territorio_bairro"]
-        n_areas = int((tb_["municipio"].astype(str) + "/" + tb_["uf"].astype(str).str.upper()).eq(foco or "").sum()) \
-            if foco else len(tb_)
-    rot = st.checkbox("Mostrar nome e valor dentro das áreas", value=n_areas <= 15, key=f"mapa_rot_{nivel}",
+        n_areas = int((tab_["municipio"].astype(str) + "/" + uf_).eq(recorte_valor).sum())
+    rot = st.checkbox("Mostrar nome e valor dentro das áreas", value=n_areas <= 15,
+                      key=f"mapa_rot_{niv}_{recorte}_{recorte_valor}",
                       help="Com muitas áreas pequenas os rótulos se sobrepõem; os valores continuam ao "
                            "passar o mouse no mapa interativo.")
 
@@ -624,7 +654,8 @@ def painel_mapa(metrics: dict):
                 metrics, "municipio" if nivel == "Município" else "bairro",
                 "todos" if indicador == "Todos os parasitos" else "patogenicos",
                 modo_classes="fixas" if modo == "Fixas" else "auto",
-                limites=limites, col_nome=col_nome, mostrar_rotulos=rot, municipio_foco=foco,
+                limites=limites, col_nome=col_nome, mostrar_rotulos=rot,
+                recorte=recorte, recorte_valor=recorte_valor, estilo=estilo,
             )
         except Exception as exc:  # noqa: BLE001
             st.error(f"Não foi possível gerar o mapa ({exc}).")
@@ -647,7 +678,8 @@ def painel_mapa(metrics: dict):
     with st.expander("Ver a figura para artigo"):
         st.image(png, width="stretch")
     d1, d2 = st.columns(2)
-    nome_base = "mapa_prevalencia_" + ("municipio" if nivel == "Município" else "bairro")
+    nome_base = "mapa_prevalencia_" + niv + "_" + recorte + (
+        "_" + mapas.chave(recorte_valor).replace(" ", "-").replace("/", "-") if recorte_valor else "")
     with d1:
         st.download_button("⬇ Figura PNG (300 dpi)", data=png, file_name=f"{nome_base}.png", mime="image/png",
                            width="stretch")
