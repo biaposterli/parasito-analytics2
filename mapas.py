@@ -3,9 +3,10 @@ Mapas de prevalência por território (moradia do paciente) — Pirajá.
 
   * Município: malha municipal do IBGE (MMD 2025), guardada em versão
     simplificada por UF em geo/malha_municipal_2025/<UF>.geojson.gz.
-  * Bairro: precisa de um arquivo de limites de bairros enviado por quem usa
-    (GeoJSON ou shapefile compactado em .zip), porque a malha municipal não
-    tem bairros.
+  * Bairro: Malha de Bairros do Censo 2022 do IBGE, guardada simplificada por
+    UF em geo/malha_bairros_2022/<UF>.geojson.gz (só existe para os municípios
+    com divisão oficial em bairros). Alternativa: arquivo de limites enviado
+    por quem usa (GeoJSON ou shapefile .zip), por exemplo o da prefeitura.
 
 Dois produtos: uma figura no padrão cartográfico (matplotlib — rosa dos ventos,
 escala, grade de coordenadas, mapa de localização, legenda em classes, fonte)
@@ -85,6 +86,109 @@ def contorno_ufs():
     gpd = _gpd()
     with gzip.open(GEO_DIR / "ufs_2025.geojson.gz", "rt", encoding="utf-8") as f:
         return gpd.GeoDataFrame.from_features(json.load(f)["features"], crs=CRS)
+
+
+@lru_cache(maxsize=32)
+def bairros_uf(uf: str):
+    """Malha de Bairros do Censo 2022 (IBGE) da UF, ou None se a UF não tiver."""
+    gpd = _gpd()
+    p = GEO_DIR / "malha_bairros_2022" / f"{uf.upper()}.geojson.gz"
+    if not p.exists():
+        return None
+    with gzip.open(p, "rt", encoding="utf-8") as f:
+        g = gpd.GeoDataFrame.from_features(json.load(f)["features"], crs=CRS)
+    g["_k"] = g["nome"].map(chave)
+    g["_km"] = g["municipio"].map(chave)
+    return g
+
+
+def _codigo_municipio(nome, uf):
+    """(cd_mun, uf) pelo nome do município (+UF, se houver); None se ambíguo/ausente."""
+    k = chave(nome)
+    achados = []
+    for u in ([uf] if uf else todas_ufs()):
+        g = municipios_uf(u)
+        if g is not None:
+            achados += [(r.cd_mun, r.uf) for r in g[g["_k"] == k].itertuples()]
+    return achados[0] if len(achados) == 1 else None
+
+
+def casar_bairros_ibge(tab: pd.DataFrame):
+    """Junta prevalência por bairro com a Malha de Bairros 2022 do IBGE, pelo
+    município (+UF) e pelo nome do bairro (sem acento/maiúsculas; se não houver
+    nome idêntico, aceita o mais parecido do mesmo município, com aviso).
+    Devolve (gdf_com_dados, gdf_sem_dados, ufs, avisos)."""
+    import difflib
+    gpd = _gpd()
+    avisos, partes, munis_ok, ufs = [], [], set(), set()
+    sem_malha, nao_achados, aproximados = set(), [], []
+    for _, r in tab.iterrows():
+        uf = str(r.get("uf") or "").strip().upper()
+        cod = _codigo_municipio(r["municipio"], uf)
+        if cod is None:
+            nao_achados.append(f"{r['bairro']} ({r['municipio']})")
+            continue
+        cd_mun, uf = cod
+        b = bairros_uf(uf)
+        bm = None if b is None else b[b["cd_mun"].astype(str) == str(cd_mun)]
+        if bm is None or bm.empty:
+            sem_malha.add(f"{r['municipio']}/{uf}")
+            continue
+        munis_ok.add(str(cd_mun))
+        ufs.add(uf)
+        k = chave(r["bairro"])
+        hit = bm[bm["_k"] == k]
+        if hit.empty:
+            parecido = difflib.get_close_matches(k, list(bm["_k"]), n=1, cutoff=0.82)
+            if not parecido:
+                nao_achados.append(f"{r['bairro']} ({r['municipio']})")
+                continue
+            hit = bm[bm["_k"] == parecido[0]]
+            aproximados.append(f"{r['bairro']} → {hit['nome'].iloc[0]}")
+        linha = hit.iloc[[0]].copy()
+        linha["nome"] = r["bairro"]
+        for c in tab.columns:
+            if c not in ("bairro", "municipio", "uf"):
+                linha[c] = r[c]
+        partes.append(linha)
+    if sem_malha:
+        avisos.append("Municípios sem divisão em bairros na malha do IBGE (Censo 2022): "
+                      + ", ".join(sorted(sem_malha)) + ". Use o mapa por município ou envie os limites da prefeitura.")
+    if aproximados:
+        avisos.append("Bairros associados pelo nome mais parecido na malha do IBGE — confira: "
+                      + "; ".join(aproximados))
+    if nao_achados:
+        avisos.append("Bairros não encontrados na malha do IBGE (ficaram fora do mapa): " + ", ".join(nao_achados))
+    if not partes:
+        return None, None, ufs, avisos
+    com = gpd.GeoDataFrame(pd.concat(partes, ignore_index=True), crs=CRS)
+    # se dois nomes da planilha caíram no mesmo bairro do IBGE, soma
+    if com["cd_bairro"].duplicated().any():
+        dups = com.loc[com["cd_bairro"].duplicated(keep=False), "nome"]
+        avisos.append("Nomes diferentes da planilha caíram no mesmo bairro do IBGE e foram somados: "
+                      + ", ".join(sorted(set(dups))))
+        geo = com.drop_duplicates("cd_bairro").set_index("cd_bairro")["geometry"]
+        agg = com.groupby("cd_bairro").agg(
+            nome=("nome", " / ".join), n_pacientes=("n_pacientes", "sum"), n_positivos=("n_positivos", "sum"),
+            n_positivos_patogenico=("n_positivos_patogenico", "sum"))
+        agg["prevalencia"] = (100 * agg.n_positivos / agg.n_pacientes).round(1)
+        agg["prevalencia_patogenico"] = (100 * agg.n_positivos_patogenico / agg.n_pacientes).round(1)
+        ic = [_wilson(k, n) for k, n in zip(agg.n_positivos, agg.n_pacientes)]
+        agg["ic95_inf"], agg["ic95_sup"] = [a for a, _ in ic], [b for _, b in ic]
+        com = gpd.GeoDataFrame(agg.join(geo).reset_index(), geometry="geometry", crs=CRS)
+    todos = pd.concat([bairros_uf(u) for u in ufs], ignore_index=True)
+    sem = todos[todos["cd_mun"].astype(str).isin(munis_ok) & ~todos["cd_bairro"].isin(com["cd_bairro"])]
+    return com, gpd.GeoDataFrame(sem, crs=CRS), ufs, avisos
+
+
+def _wilson(k, n, z=1.96):
+    if not n:
+        return (None, None)
+    p = k / n
+    d = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    h = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return (round(100 * max(0.0, c - h), 1), round(100 * min(1.0, c + h), 1))
 
 
 def todas_ufs() -> list[str]:
@@ -474,20 +578,30 @@ def preparar_mapa(metrics: dict, nivel: str, indicador: str, modo_classes: str =
         if tab_b is None or tab_b.empty:
             return {"ok": False, "erro": "Nenhum paciente com bairro preenchido.", "avisos": avisos}
         if limites is None:
-            return {"ok": False, "erro": "Para o mapa por bairro, envie o arquivo com os limites dos bairros.",
-                    "avisos": avisos}
-        areas, todos, av = casar_bairros(tab_b, limites, col_nome)
-        avisos += av
-        if areas is None:
-            return {"ok": False, "erro": "Nenhum bairro da planilha foi encontrado no arquivo de limites "
-                                         "(confira a coluna com o nome do bairro).", "avisos": avisos}
-        sem = todos[todos["prevalencia"].isna()]
+            # padrão: Malha de Bairros do Censo 2022 (IBGE)
+            areas, sem, ufs_b, av = casar_bairros_ibge(tab_b)
+            avisos += av
+            if areas is None:
+                return {"ok": False, "erro": "Nenhum bairro da planilha foi encontrado na malha de bairros do "
+                                             "IBGE. Confira bairro/município/UF na planilha, use o mapa por "
+                                             "município ou envie os limites da prefeitura.", "avisos": avisos}
+            ufs = set(ufs) | set(ufs_b)
+            fonte_bairros = "Bairros: IBGE, Malha de Bairros (Censo 2022)"
+        else:
+            areas, todos, av = casar_bairros(tab_b, limites, col_nome)
+            avisos += av
+            if areas is None:
+                return {"ok": False, "erro": "Nenhum bairro da planilha foi encontrado no arquivo de limites "
+                                             "(confira a coluna com o nome do bairro).", "avisos": avisos}
+            sem = todos[todos["prevalencia"].isna()]
+            fonte_bairros = "Bairros: arquivo de limites enviado pelo usuário"
         rot_area = "Bairro"
         munis = sorted(set(tab_b["municipio"].astype(str)) - {""})
         titulo = f"Prevalência de {qual} por bairro de residência" + (f" — {', '.join(munis)}" if len(munis) <= 2 else "")
         if not ufs:
             ufs = {str(u).upper() for u in tab_b["uf"] if str(u).strip()}
 
+    nota = fonte_bairros if nivel != "municipio" else ""
     lims = classes(areas[valor_col], modo_classes)
     if mostrar_rotulos is None:
         mostrar_rotulos = len(areas) <= 12
@@ -496,7 +610,7 @@ def preparar_mapa(metrics: dict, nivel: str, indicador: str, modo_classes: str =
         avisos.append(f"{pequenos} área(s) com menos de 10 pacientes: prevalência pouco precisa — "
                       "interprete com cuidado (veja o IC 95% na tabela).")
     fig_e = figura_estatica(areas, valor_col, titulo, rot_area, lims, contexto=contexto, sem_dados=sem,
-                            ufs_destaque=ufs, mostrar_rotulos=mostrar_rotulos)
+                            ufs_destaque=ufs, mostrar_rotulos=mostrar_rotulos, nota=nota)
     fig_i = figura_interativa(areas, valor_col, rot_area, lims, contexto=contexto, sem_dados=sem,
                               mostrar_rotulos=mostrar_rotulos)
     return {"ok": True, "avisos": avisos, "fig_estatica": fig_e, "fig_interativa": fig_i, "titulo": titulo}

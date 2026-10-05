@@ -571,12 +571,18 @@ def painel_mapa(metrics: dict):
                              "Fixas: <10, 10–20, 20–40, 40–60, ≥60% — use para comparar estudos.")
     limites, col_nome = None, None
     if nivel == "Bairro":
-        st.caption(
-            "A malha do IBGE usada aqui vai até município. Para pintar os **bairros**, envie o arquivo com os "
-            "limites dos bairros (da prefeitura ou da malha de bairros do IBGE): GeoJSON, ou shapefile "
-            "compactado em .zip (com os arquivos .shp, .shx, .dbf e .prj)."
+        fonte_b = st.radio(
+            "Limites dos bairros", ["Malha de bairros do IBGE (Censo 2022)", "Arquivo próprio (ex.: prefeitura)"],
+            horizontal=True, key="mapa_fonte_bairros",
+            help="A malha do IBGE só tem bairros nos municípios com divisão oficial em bairros. Se o seu "
+                 "município não tiver, ou se preferir os limites da prefeitura, envie um arquivo próprio.",
         )
-        arq = st.file_uploader("Limites dos bairros", type=["geojson", "json", "zip"], key="mapa_lim")
+    if nivel == "Bairro" and fonte_b.startswith("Arquivo"):
+        st.caption(
+            "Envie os limites dos bairros em GeoJSON, ou shapefile compactado em .zip (com os arquivos .shp, "
+            ".shx, .dbf e .prj). Qualquer sistema de coordenadas — o painel converte para SIRGAS 2000."
+        )
+        arq = st.file_uploader("Arquivo de limites dos bairros", type=["geojson", "json", "zip"], key="mapa_lim")
         if arq is None:
             st.info("Envie o arquivo de limites dos bairros para gerar este mapa.")
             st.session_state.pop("mapa_pdf", None)
@@ -1121,8 +1127,10 @@ st.markdown(
     amostras consideradas. O relatório mostra a prevalência por paciente, sempre separada entre
     fezes e lâmina (Graham), considerando todos os parasitos e só os patogênicos, com intervalos
     de confiança de 95%, comparação entre métodos e efeito do número de amostras. Amostras
-    insuficientes não entram no cálculo como negativas. No final, você baixa o relatório em PDF e
-    em Excel.</p>
+    insuficientes não entram no cálculo como negativas. Se a planilha trouxer o bairro e o município
+    onde cada paciente mora, o painel também mostra a prevalência por território e pode gerar mapas
+    por município e por bairro, no padrão cartográfico, prontos para artigo. No final, você baixa o
+    relatório em PDF e em Excel.</p>
     </div>""",
     unsafe_allow_html=True,
 )

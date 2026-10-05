@@ -12,3 +12,16 @@ estados, ainda mais generalizado, para o mapa de localização.
 
 Antes de usar a malha original, leia a Nota Metodológica do IBGE "Informações
 técnicas e legais para a utilização dos dados publicados".
+
+---------------------------------------------------------------------------
+Malha de bairros usada no mapa por bairro
+
+Fonte: IBGE — Malha de Bairros do Censo Demográfico 2022 (BR_bairros_CD2022),
+publicada em 14/11/2024. Sistema de referência: SIRGAS 2000 (EPSG:4674).
+https://www.ibge.gov.br/geociencias/organizacao-do-territorio/malhas-territoriais/26565-malhasde-setores-censitarios-divisoes-intramunicipais.html
+
+malha_bairros_2022/<UF>.geojson.gz é uma versão SIMPLIFICADA (tolerância de
+0,0002°, cerca de 20 m; coordenadas com 5 casas decimais), só com código e nome
+do município e do bairro. Só há bairros nos municípios com divisão oficial em
+bairros; segundo o IBGE, os limites originais podem ter sido ajustados para se
+encaixar nos setores censitários.
