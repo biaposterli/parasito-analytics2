@@ -10,6 +10,12 @@ desenho de mapas temáticos: geometrias generalizadas com tolerância de 0,0008�
 (malha_municipal_2025/<UF>.geojson.gz). ufs_2025.geojson.gz traz o contorno dos
 estados, ainda mais generalizado, para o mapa de localização.
 
+malha_municipal_detalhe/<UF>.geojson.gz — versão DETALHADA da mesma malha, usada
+quando o mapa mostra um município (recorte "Município"). Simplificação TOPOLÓGICA
+(shapely.coverage_simplify, tolerância 0,0001°): cada divisa compartilhada é
+simplificada uma única vez, então municípios vizinhos continuam encaixados.
+Desvio em relação ao original: até ~12 m em 95% dos municípios.
+
 Antes de usar a malha original, leia a Nota Metodológica do IBGE "Informações
 técnicas e legais para a utilização dos dados publicados".
 
@@ -20,16 +26,22 @@ Fonte: IBGE — Malha de Bairros do Censo Demográfico 2022 (BR_bairros_CD2022),
 publicada em 14/11/2024. Sistema de referência: SIRGAS 2000 (EPSG:4674).
 https://www.ibge.gov.br/geociencias/organizacao-do-territorio/malhas-territoriais/26565-malhasde-setores-censitarios-divisoes-intramunicipais.html
 
-malha_bairros_2022/<UF>.geojson.gz é uma versão SIMPLIFICADA (tolerância de
-0,0002°, cerca de 20 m; coordenadas com 5 casas decimais), só com código e nome
-do município e do bairro. Só há bairros nos municípios com divisão oficial em
+malha_bairros_2022/<UF>.geojson.gz é uma versão SIMPLIFICADA, só com código e
+nome do município e do bairro. Simplificação TOPOLÓGICA feita município a
+município (bairros + área do município sem bairro, juntos), tolerância 0,0001°:
+bairros vizinhos continuam encaixados. Depois, cada bairro é recortado pelo limite
+do município na malha detalhada acima — assim nenhum bairro passa do limite
+municipal oficial de 2025. (Na malha original de 2022, alguns bairros avançam
+sobre municípios vizinhos, porque limites municipais mudaram entre 2022 e 2025.)
+Desvio em relação ao original: até ~11 m em 95% dos bairros. Só há bairros nos municípios com divisão oficial em
 bairros; segundo o IBGE, os limites originais podem ter sido ajustados para se
 encaixar nos setores censitários.
 
 ---------------------------------------------------------------------------
 Malhas complementares (municípios sem bairros na malha do IBGE)
 
-malha_bairros_extra/<UF>.geojson.gz — mesmas regras de simplificação (~20 m),
+malha_bairros_extra/<UF>.geojson.gz — mesmas regras (simplificação topológica e
+recorte pelo limite municipal do IBGE),
 convertidas de SIRGAS 2000 / UTM 23S para SIRGAS 2000 geográfico. Cada polígono
 traz a propriedade "fonte". Quando um município tem malha complementar, ela
 substitui a do IBGE para aquele município.

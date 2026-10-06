@@ -81,6 +81,39 @@ def municipios_uf(uf: str):
     return g
 
 
+@lru_cache(maxsize=4)
+def municipios_uf_detalhe(uf: str):
+    """Malha municipal detalhada (~10 m, simplificação topológica: vizinhos continuam
+    encaixados e os bairros foram recortados por ela). Usada no recorte de um município;
+    cai na malha leve se o arquivo não existir."""
+    gpd = _gpd()
+    p = GEO_DIR / "malha_municipal_detalhe" / f"{uf.upper()}.geojson.gz"
+    if not p.exists():
+        return municipios_uf(uf)
+    with gzip.open(p, "rt", encoding="utf-8") as f:
+        g = gpd.GeoDataFrame.from_features(json.load(f)["features"], crs=CRS)
+    g["_k"] = g["nome"].map(chave)
+    return g
+
+
+@lru_cache(maxsize=32)
+def contorno_uf_real(uf: str):
+    """Contorno do estado tirado da malha municipal (não do contorno generalizado)."""
+    g = municipios_uf(uf)
+    if g is None:
+        return None
+    from shapely.ops import unary_union
+    d = 0.0006  # fecha as frestas de ~90 m entre municípios simplificados separadamente
+    geom = unary_union([x.buffer(d) for x in g.geometry]).buffer(-d)
+    return _gpd().GeoDataFrame({"sigla": [uf]}, geometry=[geom], crs=CRS)
+
+
+def _ufs_na_extensao(ext, ufs_gdf):
+    from shapely.geometry import box
+    caixa = box(*ext)
+    return [u for u, g in zip(ufs_gdf["sigla"], ufs_gdf.geometry) if g.intersects(caixa)]
+
+
 @lru_cache(maxsize=1)
 def contorno_ufs():
     gpd = _gpd()
@@ -764,6 +797,8 @@ def figura_estatica(cena: dict):
         ax = fig.add_axes([0.075, 0.085, 0.66, 0.83])
         ax.set_facecolor(FUNDO)
         lw_fundo = 0.25 if cena["recorte"] in ("brasil", "regiao") else 0.6
+        for camada in cena.get("fundo_claro", []):
+            camada.plot(ax=ax, color="white", edgecolor="#E9E5DC", linewidth=0.4)
         for camada in cena["fundo"]:
             camada.plot(ax=ax, color="white", edgecolor=BORDA, linewidth=lw_fundo)
         if cena.get("ufs_contorno") is not None:
@@ -885,6 +920,8 @@ def figura_interativa(cena: dict, altura=620):
     areas, valor_col, lims = cena["areas"], cena["valor_col"], cena["lims"]
     ext, pontos, rotulos_on, rot_area = cena["ext"], cena["pontos"], cena["rotulos"], cena["rotulo_area"]
     fig = go.Figure()
+    for camada in cena.get("fundo_claro", []):
+        _camada_unica(fig, camada, "#FFFFFF", "#E9E5DC", 0.5)
     for camada in cena["fundo"]:
         _camada_unica(fig, camada, "#FFFFFF", BORDA, 0.5 if cena["recorte"] in ("brasil", "regiao") else 0.8)
     if cena.get("ufs_contorno") is not None:
@@ -1057,7 +1094,7 @@ def preparar_mapa(metrics: dict, nivel: str, indicador: str, modo_classes: str =
     # ---- extensão e camadas de fundo, conforme o recorte ----
     ufs_gdf = contorno_ufs()
     ufs_dados = set(areas["uf"].astype(str).str.upper()) if "uf" in areas.columns else set()
-    fundo, ufs_contorno = [], None
+    fundo, ufs_contorno, fundo_claro = [], None, []
     if recorte == "brasil":
         ext = _ext_pad(ufs_gdf.total_bounds, 0.03)
         fundo = [ufs_gdf]
@@ -1069,19 +1106,32 @@ def preparar_mapa(metrics: dict, nivel: str, indicador: str, modo_classes: str =
         ufs_contorno = reg
         local = f"Região {recorte_valor}"
     elif recorte == "estado":
+        # fundo tirado da malha municipal oficial (o contorno generalizado dos estados, de
+        # ~1 km, só serve para Brasil/região e para o mapa de localização)
         uf = next(iter(ufs_rec))
         mun_uf = municipios_uf(uf)
         ext = _ext_pad(mun_uf.total_bounds, 0.05)
-        fundo = [ufs_gdf, mun_uf]
-        ufs_contorno = ufs_gdf[ufs_gdf["sigla"] == uf]
+        vizinhas = [municipios_uf(u) for u in _ufs_na_extensao(ext, ufs_gdf) if u != uf]
+        fundo_claro = [g.cx[ext[0]:ext[2], ext[1]:ext[3]] for g in vizinhas if g is not None]
+        fundo = [mun_uf]
+        ufs_contorno = contorno_uf_real(uf)
         local = NOME_UF.get(uf, uf)
-    else:  # municipio
+    else:  # municipio — malha detalhada, a mesma em que os bairros foram encaixados
         nome_f, _, uf = str(recorte_valor).partition("/")
-        mun_uf = municipios_uf(uf)
+        mun_uf = municipios_uf_detalhe(uf)
         alvo = mun_uf[mun_uf["_k"] == chave(nome_f)] if mun_uf is not None else None
         base_b = alvo.total_bounds if alvo is not None and not alvo.empty else areas.total_bounds
         ext = _ext_pad(base_b, 0.08)
-        fundo = [ufs_gdf] + ([mun_uf] if mun_uf is not None else [])
+        fundo = []
+        for u in _ufs_na_extensao(ext, ufs_gdf) or [uf]:
+            g = municipios_uf_detalhe(u)
+            if g is not None:
+                fundo.append(g.cx[ext[0]:ext[2], ext[1]:ext[3]])
+        if nivel == "municipio" and alvo is not None and not alvo.empty and "cd_mun" in areas.columns:
+            geo_det = dict(zip(alvo["cd_mun"].astype(str), alvo.geometry))
+            areas = areas.copy()
+            areas["geometry"] = [geo_det.get(str(c), g) for c, g in zip(areas["cd_mun"], areas.geometry)]
+            areas = gpd.GeoDataFrame(areas, geometry="geometry", crs=CRS)
         local = str(recorte_valor)
     if sem is not None and not sem.empty:
         sem = sem.cx[ext[0]:ext[2], ext[1]:ext[3]]
@@ -1098,7 +1148,7 @@ def preparar_mapa(metrics: dict, nivel: str, indicador: str, modo_classes: str =
                       "se for o caso, use 'Círculos proporcionais'.")
     titulo = f"Prevalência de {qual} por {unidade} de residência — {local}"
     cena = dict(areas=areas, valor_col=valor_col, lims=lims, ext=ext, pontos=pontos, rotulos=mostrar_rotulos,
-                fundo=fundo, ufs_contorno=ufs_contorno, sem_dados=sem, rotulo_area=rot_area, recorte=recorte,
+                fundo=fundo, fundo_claro=fundo_claro, ufs_contorno=ufs_contorno, sem_dados=sem, rotulo_area=rot_area, recorte=recorte,
                 ufs_destaque=ufs_dados or ufs_rec, titulo=titulo, nota=nota)
     return {"ok": True, "avisos": avisos, "fig_estatica": figura_estatica(cena),
             "fig_interativa": figura_interativa(cena), "titulo": titulo}
